@@ -7,7 +7,7 @@
   "host_permissions": [
     "https://merchant.phi.idfcbank.com/*",
     "https://api.velorapay.in/*",
-    "https://api.anthropic.com/*"
+    "https://generativelanguage.googleapis.com/*"
   ],
   "action": {
     "default_popup": "popup.html",

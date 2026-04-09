@@ -94,45 +94,42 @@ async function callAPI(endpoint, payload) {
   return { ok: res.ok, status: res.status, data, url, ts: new Date().toISOString() };
 }
 
-// ── CAPTCHA solver using Claude Haiku (~$0.0002 per call) ────────────────────
+// ── CAPTCHA solver using Google Gemini Flash (FREE tier — 15 RPM) ────────────
+// Get free API key at: https://aistudio.google.com/apikey
+// Set it in the extension popup as "Gemini API Key"
 async function solveCaptchaAI(imageData) {
-  const key = await getKey('anthropicKey');
+  const key = await getKey('geminiKey');
   if (!key) {
-    console.error(TAG, '🔐 No Anthropic API key set — cannot solve captcha');
+    console.error(TAG, '🔐 No Gemini API key set — get one free at aistudio.google.com/apikey');
     throw new Error('NO_KEY');
   }
-  console.log(TAG, '🔐 Sending captcha to Claude Haiku...');
+  console.log(TAG, '🔐 Sending captcha to Gemini Flash...');
   const base64Data = imageData.replace(/^data:image\/\w+;base64,/, '');
   console.log(TAG, `🔐 Image size: ${Math.round(base64Data.length * 0.75 / 1024)}KB`);
 
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${key}`;
+  const res = await fetch(url, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': key,
-      'anthropic-version': '2023-06-01',
-      'anthropic-dangerous-direct-browser-access': 'true'
-    },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 30,
-      messages: [{ role: 'user', content: [
-        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: base64Data } },
-        { type: 'text', text: 'Read this CAPTCHA image. The characters are alphanumeric (lowercase letters and digits) placed at varying vertical positions with different colors. Return ONLY the exact characters left to right, no spaces, no punctuation, no explanation.' }
-      ]}]
+      contents: [{ parts: [
+        { inlineData: { mimeType: 'image/png', data: base64Data } },
+        { text: 'Read this CAPTCHA image. The characters are alphanumeric (lowercase letters and digits) placed at varying vertical positions with different colors. Return ONLY the exact characters left to right, no spaces, no punctuation, no explanation.' }
+      ]}],
+      generationConfig: { maxOutputTokens: 30, temperature: 0 }
     })
   });
 
   if (!res.ok) {
     const err = await res.text().catch(() => '');
-    console.error(TAG, `🔐 Haiku API error: ${res.status}`, err.slice(0, 200));
-    throw new Error(`AI ${res.status}: ${err.slice(0, 100)}`);
+    console.error(TAG, `🔐 Gemini API error: ${res.status}`, err.slice(0, 200));
+    throw new Error(`Gemini ${res.status}: ${err.slice(0, 100)}`);
   }
 
   const d = await res.json();
-  const raw = d.content[0].text.trim();
+  const raw = d.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
   const cleaned = raw.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
-  console.log(TAG, `🔐 Haiku raw: "${raw}" → cleaned: "${cleaned}"`);
+  console.log(TAG, `🔐 Gemini raw: "${raw}" → cleaned: "${cleaned}"`);
   return cleaned;
 }
 

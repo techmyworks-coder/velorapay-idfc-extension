@@ -113,8 +113,8 @@ async function onSelect() {
 
 // ── Settings ──────────────────────────────────────────────────────────────────
 function loadSettings() {
-  chrome.storage.local.get(['anthropicKey','syncInterval','toggles'], d => {
-    if (d.anthropicKey) document.getElementById('inpKey').value = d.anthropicKey;
+  chrome.storage.local.get(['geminiKey','syncInterval','toggles'], d => {
+    if (d.geminiKey) document.getElementById('inpKey').value = d.geminiKey;
     if (d.syncInterval) document.getElementById('inpInterval').value = d.syncInterval;
     if (d.toggles) {
       ['togAutoFill','togCaptcha','togFilter','togPerPage'].forEach(id => {
@@ -126,7 +126,7 @@ function loadSettings() {
 
 function saveKey() {
   const v = document.getElementById('inpKey').value.trim();
-  chrome.storage.local.set({ anthropicKey: v });
+  chrome.storage.local.set({ geminiKey: v });
   flash('btnSaveKey', '✓ Saved');
 }
 
