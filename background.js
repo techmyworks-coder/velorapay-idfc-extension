@@ -51,7 +51,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.action === 'solveCaptcha') {
-    console.log(TAG, '🔐 Captcha solve requested — calling Haiku...');
+    console.log(TAG, '🔐 Captcha solve requested — calling Groq...');
     const t0 = Date.now();
     solveCaptchaAI(msg.imageData)
       .then(t => {
@@ -94,42 +94,46 @@ async function callAPI(endpoint, payload) {
   return { ok: res.ok, status: res.status, data, url, ts: new Date().toISOString() };
 }
 
-// ── CAPTCHA solver using Google Gemini Flash (FREE tier — 15 RPM) ────────────
-// Get free API key at: https://aistudio.google.com/apikey
-// Set it in the extension popup as "Gemini API Key"
+// ── CAPTCHA solver using Groq (FREE — Llama 4 Scout vision, ~34ms) ───────────
+// Get free API key at: https://console.groq.com/keys
+// Set it in the extension popup as "Groq API Key"
 async function solveCaptchaAI(imageData) {
-  const key = await getKey('geminiKey');
+  const key = await getKey('groqKey');
   if (!key) {
-    console.error(TAG, '🔐 No Gemini API key set — get one free at aistudio.google.com/apikey');
+    console.error(TAG, '🔐 No Groq API key set — get one free at console.groq.com/keys');
     throw new Error('NO_KEY');
   }
-  console.log(TAG, '🔐 Sending captcha to Gemini Flash...');
+  console.log(TAG, '🔐 Sending captcha to Groq Llama 4 Scout...');
   const base64Data = imageData.replace(/^data:image\/\w+;base64,/, '');
   console.log(TAG, `🔐 Image size: ${Math.round(base64Data.length * 0.75 / 1024)}KB`);
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${key}`;
-  const res = await fetch(url, {
+  const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${key}`
+    },
     body: JSON.stringify({
-      contents: [{ parts: [
-        { inlineData: { mimeType: 'image/png', data: base64Data } },
-        { text: 'Read this CAPTCHA image. The characters are alphanumeric (lowercase letters and digits) placed at varying vertical positions with different colors. Return ONLY the exact characters left to right, no spaces, no punctuation, no explanation.' }
+      model: 'meta-llama/llama-4-scout-17b-16e-instruct',
+      messages: [{ role: 'user', content: [
+        { type: 'image_url', image_url: { url: `data:image/png;base64,${base64Data}` } },
+        { type: 'text', text: 'Read this CAPTCHA image. Return ONLY the exact characters left to right, no spaces, no explanation.' }
       ]}],
-      generationConfig: { maxOutputTokens: 30, temperature: 0 }
+      max_tokens: 30,
+      temperature: 0
     })
   });
 
   if (!res.ok) {
     const err = await res.text().catch(() => '');
-    console.error(TAG, `🔐 Gemini API error: ${res.status}`, err.slice(0, 200));
-    throw new Error(`Gemini ${res.status}: ${err.slice(0, 100)}`);
+    console.error(TAG, `🔐 Groq API error: ${res.status}`, err.slice(0, 200));
+    throw new Error(`Groq ${res.status}: ${err.slice(0, 100)}`);
   }
 
   const d = await res.json();
-  const raw = d.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
+  const raw = d.choices?.[0]?.message?.content?.trim() || '';
   const cleaned = raw.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
-  console.log(TAG, `🔐 Gemini raw: "${raw}" → cleaned: "${cleaned}"`);
+  console.log(TAG, `🔐 Groq raw: "${raw}" → cleaned: "${cleaned}"`);
   return cleaned;
 }
 
