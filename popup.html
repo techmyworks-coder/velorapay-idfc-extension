@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>VeloraPay IDFC Merchant</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --red:#9d1d27;--red-light:#c0303d;--red-glow:rgba(157,29,39,0.35);
+  --bg:#0f0a0b;--bg2:#1a0f11;--bg3:#241519;--bg4:#2e1a1e;
+  --border:#3d2025;--border2:#4a2830;
+  --text:#f0e8e9;--text2:#b89095;--text3:#7a5860;
+  --green:#22c55e;--yellow:#f59e0b;--blue:#3b82f6;--orange:#f97316;
+}
+body{width:420px;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:13px;overflow-x:hidden;}
+
+/* ── HEADER ── */
+.hdr{
+  background:linear-gradient(135deg,var(--bg2) 0%,var(--bg3) 100%);
+  border-bottom:1px solid var(--border);padding:14px 16px;
+  display:flex;align-items:center;justify-content:space-between;
+  position:relative;overflow:hidden;
+}
+.hdr::before{content:'';position:absolute;top:-30px;right:-30px;width:120px;height:120px;
+  background:radial-gradient(circle,var(--red-glow) 0%,transparent 70%);pointer-events:none;}
+.hdr-left{display:flex;align-items:center;gap:10px;}
+.hdr-icon{width:36px;height:36px;background:linear-gradient(135deg,var(--red),var(--red-light));
+  border-radius:10px;display:flex;align-items:center;justify-content:center;
+  font-size:18px;box-shadow:0 4px 12px var(--red-glow);}
+.hdr-title{font-size:15px;font-weight:700;color:#fff;letter-spacing:-0.3px;}
+.hdr-sub{font-size:11px;color:var(--text3);margin-top:1px;}
+.live-badge{
+  display:flex;align-items:center;gap:5px;background:rgba(34,197,94,0.1);
+  border:1px solid rgba(34,197,94,0.25);border-radius:20px;padding:4px 10px;
+  font-size:11px;font-weight:600;color:var(--green);
+}
+.live-dot{width:6px;height:6px;background:var(--green);border-radius:50%;animation:pulse-green 1.5s infinite;}
+@keyframes pulse-green{0%,100%{opacity:1;transform:scale(1)}50%{opacity:0.5;transform:scale(0.8)}}
+
+/* ── TABS ── */
+.tabs{display:flex;background:var(--bg2);border-bottom:1px solid var(--border);}
+.tab{flex:1;padding:10px 4px;text-align:center;font-size:11px;font-weight:600;color:var(--text3);
+  cursor:pointer;border-bottom:2px solid transparent;letter-spacing:0.4px;text-transform:uppercase;transition:.2s;}
+.tab:hover{color:var(--text2);}
+.tab.active{color:var(--red-light);border-bottom-color:var(--red);}
+
+/* ── TAB PANELS ── */
+.panel{display:none;padding:14px;}
+.panel.active{display:block;}
+
+/* ── ACCOUNT SELECTOR ── */
+.acct-row{display:flex;gap:8px;align-items:stretch;}
+.acct-select-wrap{flex:1;}
+select{
+  width:100%;background:var(--bg3);border:1px solid var(--border2);
+  color:var(--text);padding:9px 10px;border-radius:8px;font-size:12px;outline:none;
+  -webkit-appearance:none;appearance:none;cursor:pointer;
+}
+select:focus{border-color:var(--red);}
+.btn-nav{
+  background:linear-gradient(135deg,var(--red),var(--red-light));color:#fff;
+  border:none;border-radius:8px;padding:9px 12px;cursor:pointer;font-size:14px;
+  box-shadow:0 2px 8px var(--red-glow);white-space:nowrap;transition:.2s;
+}
+.btn-nav:hover{transform:translateY(-1px);box-shadow:0 4px 12px var(--red-glow);}
+.acct-chip{
+  margin-top:8px;background:var(--bg3);border:1px solid var(--border2);
+  border-radius:8px;padding:10px 12px;display:none;
+}
+.acct-chip.show{display:block;}
+.chip-name{font-weight:600;font-size:13px;color:#fff;}
+.chip-meta{font-size:11px;color:var(--text3);margin-top:3px;}
+.chip-row{display:flex;gap:12px;margin-top:8px;}
+.chip-tag{
+  font-size:10px;font-weight:700;letter-spacing:0.5px;
+  background:rgba(157,29,39,0.15);color:var(--red-light);
+  border:1px solid rgba(157,29,39,0.25);border-radius:4px;padding:2px 7px;
+}
+
+/* ── STATUS CARD ── */
+.status-card{
+  background:linear-gradient(135deg,var(--bg3),var(--bg4));
+  border:1px solid var(--border2);border-radius:10px;
+  padding:12px 14px;margin-top:12px;position:relative;overflow:hidden;
+}
+.status-card::after{content:'';position:absolute;top:0;left:0;right:0;height:2px;
+  background:linear-gradient(90deg,transparent,var(--red),transparent);
+  animation:scan 3s linear infinite;}
+@keyframes scan{0%{transform:translateX(-100%)}100%{transform:translateX(100%)}}
+.sc-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;}
+.sc-state{display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;}
+.sc-dot{width:8px;height:8px;border-radius:50%;background:var(--green);}
+.sc-dot.yellow{background:var(--yellow);animation:blink .8s infinite;}
+.sc-dot.red{background:#ef4444;}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:0.3}}
+.sc-timer{font-size:11px;color:var(--text3);}
+.sc-timer span{color:var(--yellow);font-weight:700;font-family:monospace;}
+.sc-msg{font-size:12px;color:var(--text2);}
+
+/* ── STATS GRID ── */
+.stats-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px;}
+.stat-card{
+  background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:12px;
+  position:relative;overflow:hidden;
+}
+.stat-card::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;}
+.stat-card.green::before{background:var(--green);}
+.stat-card.red::before{background:var(--red);}
+.stat-card.yellow::before{background:var(--yellow);}
+.stat-card.blue::before{background:var(--blue);}
+.stat-val{font-size:22px;font-weight:800;color:#fff;letter-spacing:-0.5px;}
+.stat-val.green{color:var(--green);}
+.stat-val.yellow{color:var(--yellow);}
+.stat-lbl{font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.5px;margin-top:2px;}
+.stat-icon{position:absolute;right:10px;top:10px;font-size:18px;opacity:0.25;}
+
+/* ── BUTTONS ── */
+.btn-row{display:flex;gap:8px;margin-top:12px;}
+.btn{border:none;border-radius:7px;padding:9px 14px;cursor:pointer;font-size:12px;font-weight:600;transition:.2s;flex:1;}
+.btn-primary{background:linear-gradient(135deg,var(--red),var(--red-light));color:#fff;box-shadow:0 2px 8px var(--red-glow);}
+.btn-primary:hover{transform:translateY(-1px);box-shadow:0 4px 14px var(--red-glow);}
+.btn-ghost{background:var(--bg3);color:var(--text2);border:1px solid var(--border2);}
+.btn-ghost:hover{background:var(--bg4);color:var(--text);}
+.btn-green{background:rgba(34,197,94,0.15);color:var(--green);border:1px solid rgba(34,197,94,0.25);}
+.btn-green:hover{background:rgba(34,197,94,0.25);}
+
+/* ── ACTIVITY FEED (5s pulse) ── */
+.activity-bar{
+  background:var(--bg3);border:1px solid var(--border);border-radius:8px;
+  padding:8px 10px;margin-top:12px;display:flex;align-items:center;gap:8px;
+  overflow:hidden;
+}
+.activity-text{font-size:11px;color:var(--text3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;}
+.activity-wave{display:flex;align-items:center;gap:2px;flex-shrink:0;}
+.activity-wave span{display:block;width:3px;border-radius:2px;background:var(--red-light);
+  animation:wave 1.2s ease-in-out infinite;}
+.activity-wave span:nth-child(2){animation-delay:.15s;}
+.activity-wave span:nth-child(3){animation-delay:.3s;}
+.activity-wave span:nth-child(4){animation-delay:.45s;}
+.activity-wave span:nth-child(5){animation-delay:.6s;}
+@keyframes wave{0%,100%{height:4px}50%{height:14px}}
+
+/* ── LOGS ── */
+.log-toolbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;}
+.log-toolbar .label{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:var(--text3);}
+.log-filters{display:flex;gap:4px;}
+.filter-btn{padding:3px 8px;border-radius:4px;border:1px solid var(--border2);background:var(--bg3);
+  color:var(--text3);font-size:10px;cursor:pointer;font-weight:600;transition:.2s;}
+.filter-btn.active,.filter-btn:hover{background:var(--bg4);color:var(--text);}
+.filter-btn.ok{color:var(--green);border-color:rgba(34,197,94,0.3);}
+.filter-btn.err{color:#ef4444;border-color:rgba(239,68,68,0.3);}
+.log-scroll{max-height:220px;overflow-y:auto;display:flex;flex-direction:column;gap:4px;}
+.log-scroll::-webkit-scrollbar{width:4px;}
+.log-scroll::-webkit-scrollbar-track{background:var(--bg2);}
+.log-scroll::-webkit-scrollbar-thumb{background:var(--border2);border-radius:2px;}
+.log-line{
+  display:flex;gap:8px;align-items:flex-start;padding:6px 8px;
+  background:var(--bg3);border-radius:6px;border:1px solid var(--border);
+  font-size:11px;font-family:'SF Mono',Monaco,monospace;line-height:1.5;
+}
+.log-ts{color:var(--text3);flex-shrink:0;min-width:54px;}
+.log-icon{flex-shrink:0;width:14px;text-align:center;}
+.log-msg{color:var(--text2);word-break:break-all;}
+.log-msg.ok{color:var(--green);}
+.log-msg.error{color:#ef4444;}
+.log-msg.warn{color:var(--yellow);}
+.log-msg.info{color:var(--text2);}
+
+/* ── API LOG ── */
+.api-entry{
+  background:var(--bg3);border:1px solid var(--border);border-radius:8px;
+  margin-bottom:8px;overflow:hidden;
+}
+.api-entry-head{
+  padding:8px 12px;display:flex;align-items:center;gap:8px;cursor:pointer;
+  border-bottom:1px solid transparent;
+}
+.api-entry.open .api-entry-head{border-bottom-color:var(--border);}
+.api-badge{padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700;letter-spacing:0.4px;}
+.api-badge.ok{background:rgba(34,197,94,0.15);color:var(--green);}
+.api-badge.err{background:rgba(239,68,68,0.15);color:#ef4444;}
+.api-ts{font-size:10px;color:var(--text3);font-family:monospace;}
+.api-summary{font-size:11px;color:var(--text2);flex:1;text-align:right;}
+.api-body{padding:10px 12px;display:none;}
+.api-entry.open .api-body{display:block;}
+.api-section{margin-bottom:8px;}
+.api-section-title{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:var(--text3);margin-bottom:4px;}
+.api-code{
+  background:var(--bg2);border:1px solid var(--border);border-radius:6px;
+  padding:8px;font-size:10px;font-family:monospace;color:#a8d8a8;
+  max-height:120px;overflow-y:auto;white-space:pre-wrap;word-break:break-all;
+}
+.api-utr-list{display:flex;flex-wrap:wrap;gap:4px;}
+.utr-tag{background:rgba(59,130,246,0.12);border:1px solid rgba(59,130,246,0.2);
+  color:var(--blue);border-radius:4px;padding:2px 6px;font-size:10px;font-family:monospace;}
+
+/* ── SETTINGS ── */
+.setting-row{margin-bottom:14px;}
+.setting-label{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:var(--text3);margin-bottom:6px;}
+.input-wrap{display:flex;gap:6px;}
+input[type=password],input[type=text],input[type=number]{
+  flex:1;background:var(--bg3);border:1px solid var(--border2);color:var(--text);
+  padding:8px 10px;border-radius:7px;font-size:12px;outline:none;
+}
+input:focus{border-color:var(--red);}
+.save-btn{background:var(--bg4);border:1px solid var(--border2);color:var(--text2);
+  padding:8px 12px;border-radius:7px;cursor:pointer;font-size:11px;font-weight:600;}
+.save-btn:hover{color:var(--text);}
+.hint{font-size:10px;color:var(--text3);margin-top:5px;line-height:1.5;}
+.toggle-row{display:flex;align-items:center;justify-content:space-between;
+  background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px;}
+.toggle-info{font-size:12px;color:var(--text2);}
+.toggle-info small{display:block;font-size:10px;color:var(--text3);margin-top:1px;}
+.toggle{position:relative;width:36px;height:20px;flex-shrink:0;}
+.toggle input{opacity:0;width:0;height:0;}
+.slider{position:absolute;inset:0;background:var(--bg4);border-radius:20px;cursor:pointer;transition:.3s;border:1px solid var(--border2);}
+.slider:before{content:'';position:absolute;width:14px;height:14px;left:2px;top:2px;background:var(--text3);border-radius:50%;transition:.3s;}
+.toggle input:checked+.slider{background:var(--red);}
+.toggle input:checked+.slider:before{transform:translateX(16px);background:white;}
+
+/* ── FOOTER ── */
+.footer{padding:10px 14px;border-top:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;background:var(--bg2);}
+.footer-text{font-size:10px;color:var(--text3);}
+.footer-ver{font-size:10px;color:var(--text3);font-family:monospace;}
+</style>
+</head>
+<body>
+
+<!-- HEADER -->
+<div class="hdr">
+  <div class="hdr-left">
+    <div class="hdr-icon">⚡</div>
+    <div>
+      <div class="hdr-title">VeloraPay IDFC Merchant</div>
+      <div class="hdr-sub">Auto-monitoring · UPI Sync</div>
+    </div>
+  </div>
+  <div class="live-badge"><div class="live-dot"></div>LIVE</div>
+</div>
+
+<!-- TABS -->
+<div class="tabs">
+  <div class="tab active" data-tab="monitor">📊 Monitor</div>
+  <div class="tab" data-tab="logs">📋 Logs</div>
+  <div class="tab" data-tab="api">🔌 API</div>
+  <div class="tab" data-tab="settings">⚙ Settings</div>
+</div>
+
+<!-- ══ MONITOR TAB ══ -->
+<div class="panel active" id="tab-monitor">
+
+  <!-- Account Selector -->
+  <div class="acct-row">
+    <div class="acct-select-wrap">
+      <select id="sel"><option>Loading accounts...</option></select>
+    </div>
+    <button class="btn-nav" id="btnGo" title="Open IDFC Portal">↗</button>
+  </div>
+  <div class="acct-chip" id="acctChip">
+    <div class="chip-name" id="chipName"></div>
+    <div class="chip-meta" id="chipMeta"></div>
+    <div class="chip-row">
+      <span class="chip-tag" id="chipAcct"></span>
+      <span class="chip-tag" id="chipUser"></span>
+    </div>
+  </div>
+
+  <!-- Status -->
+  <div class="status-card">
+    <div class="sc-top">
+      <div class="sc-state">
+        <div class="sc-dot" id="scDot"></div>
+        <span id="scState">Monitoring</span>
+      </div>
+      <div class="sc-timer">Next sync <span id="countdown">30</span>s</div>
+    </div>
+    <div class="sc-msg" id="scMsg">Waiting for activity...</div>
+  </div>
+
+  <!-- Stats -->
+  <div class="stats-grid">
+    <div class="stat-card green">
+      <div class="stat-val green" id="stSynced">0</div>
+      <div class="stat-lbl">Txns Synced</div>
+      <div class="stat-icon">✅</div>
+    </div>
+    <div class="stat-card yellow">
+      <div class="stat-val yellow" id="stAmt">₹0</div>
+      <div class="stat-lbl">Total Amount</div>
+      <div class="stat-icon">💰</div>
+    </div>
+    <div class="stat-card blue">
+      <div class="stat-val" id="stCycles" style="color:var(--blue)">0</div>
+      <div class="stat-lbl">Sync Cycles</div>
+      <div class="stat-icon">🔄</div>
+    </div>
+    <div class="stat-card red">
+      <div class="stat-val" id="stErrors" style="color:#ef4444">0</div>
+      <div class="stat-lbl">Errors</div>
+      <div class="stat-icon">⚠️</div>
+    </div>
+  </div>
+
+  <!-- Activity bar -->
+  <div class="activity-bar">
+    <div class="activity-wave">
+      <span></span><span></span><span></span><span></span><span></span>
+    </div>
+    <div class="activity-text" id="activityText">Initializing auto-monitor...</div>
+  </div>
+
+  <!-- Buttons -->
+  <div class="btn-row">
+    <button class="btn btn-primary" id="btnForce">⚡ Force Sync</button>
+    <button class="btn btn-ghost" id="btnReload">↺ Reload Page</button>
+    <button class="btn btn-green" id="btnOpen">⬡ IDFC Portal</button>
+  </div>
+</div>
+
+<!-- ══ LOGS TAB ══ -->
+<div class="panel" id="tab-logs">
+  <div class="log-toolbar">
+    <span class="label">Sync Log</span>
+    <div class="log-filters">
+      <button class="filter-btn active" data-filter="all">All</button>
+      <button class="filter-btn ok" data-filter="ok">OK</button>
+      <button class="filter-btn err" data-filter="error">Err</button>
+      <button class="filter-btn" id="btnClearLog" style="color:#ef4444">Clear</button>
+    </div>
+  </div>
+  <div class="log-scroll" id="logScroll"></div>
+</div>
+
+<!-- ══ API TAB ══ -->
+<div class="panel" id="tab-api">
+  <div class="log-toolbar">
+    <span class="label">API Calls &amp; Responses</span>
+    <button class="filter-btn" id="btnClearApi" style="color:#ef4444">Clear</button>
+  </div>
+  <div id="apiList"></div>
+</div>
+
+<!-- ══ SETTINGS TAB ══ -->
+<div class="panel" id="tab-settings">
+  <div class="setting-row">
+    <div class="setting-label">Anthropic API Key (AI Captcha)</div>
+    <div class="input-wrap">
+      <input type="password" id="inpKey" placeholder="sk-ant-api03-..." />
+      <button class="save-btn" id="btnSaveKey">Save</button>
+    </div>
+    <div class="hint">Required for automatic captcha solving. Leave blank to solve manually.</div>
+  </div>
+
+  <div class="setting-row">
+    <div class="setting-label">Sync Interval (seconds)</div>
+    <div class="input-wrap">
+      <input type="number" id="inpInterval" value="30" min="10" max="300" />
+      <button class="save-btn" id="btnSaveInterval">Save</button>
+    </div>
+    <div class="hint">How often to pull and sync transactions (default: 30s).</div>
+  </div>
+
+  <div class="setting-row">
+    <div class="setting-label">Automation Options</div>
+    <div class="toggle-row">
+      <div class="toggle-info">Auto-fill login credentials<small>Fill username & password on login page</small></div>
+      <label class="toggle"><input type="checkbox" id="togAutoFill" checked><span class="slider"></span></label>
+    </div>
+    <div class="toggle-row">
+      <div class="toggle-info">Auto-solve captcha<small>Use Claude AI to read captcha image</small></div>
+      <label class="toggle"><input type="checkbox" id="togCaptcha" checked><span class="slider"></span></label>
+    </div>
+    <div class="toggle-row">
+      <div class="toggle-info">30-minute filter<small>Only sync transactions from last 30 min</small></div>
+      <label class="toggle"><input type="checkbox" id="togFilter" checked><span class="slider"></span></label>
+    </div>
+    <div class="toggle-row">
+      <div class="toggle-info">Set 30 items per page<small>Auto-expand table to 30 rows</small></div>
+      <label class="toggle"><input type="checkbox" id="togPerPage" checked><span class="slider"></span></label>
+    </div>
+  </div>
+</div>
+
+<!-- FOOTER -->
+<div class="footer">
+  <div class="footer-text">VeloraPay IDFC Merchant Extension</div>
+  <div class="footer-ver">v3.0</div>
+</div>
+
+<script src="popup.js"></script>
+</body>
+</html>

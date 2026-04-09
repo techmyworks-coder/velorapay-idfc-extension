@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "VeloraPay IDFC Merchant Extension",
+  "version": "3.0",
+  "description": "Auto-monitor IDFC UPI transactions, sync to VeloraPay every 30 seconds",
+  "permissions": ["activeTab", "storage", "scripting", "tabs", "alarms", "notifications"],
+  "host_permissions": [
+    "https://merchant.phi.idfcbank.com/*",
+    "https://api.velorapay.in/*",
+    "https://api.anthropic.com/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://merchant.phi.idfcbank.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  }
+}
