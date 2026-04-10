@@ -250,12 +250,26 @@ async function fetchOtpFromSmsTracker() {
           continue; // silent skip — we know these are old
         }
 
-        // Filter: accept if sender contains "IDFC" (like BT-IDFCFB-S)
-        // Same approach as idfc-extension — filter by sender, not phone number
+        // Filter 1: sender must contain "IDFC" (like BT-IDFCFB-S)
         const msgSender = (msg.sender || '').toUpperCase();
         if (!msgSender.includes('IDFC')) {
-          if (pollCount <= 2) console.log(TAG, `📱 Skip — not IDFC sender: "${msg.sender}"`);
+          if (pollCount <= 4) console.log(TAG, `📱 Skip — not IDFC sender: "${msg.sender}"`);
           continue;
+        }
+
+        // Filter 2: SIM phone number must match (user enters the receiving number)
+        if (cfg.otpNumber) {
+          const filterLast10 = cfg.otpNumber.replace(/\D/g, '').slice(-10);
+          const simPhone = (
+            msg.sim_numbers?.phone_number ||
+            msg.sim_number?.phone_number ||
+            msg.phone_number ||
+            msg.to || ''
+          ).replace(/\D/g, '');
+          if (simPhone && filterLast10 && !simPhone.includes(filterLast10)) {
+            if (pollCount <= 4) console.log(TAG, `📱 Skip — wrong SIM: ${simPhone} (want *${filterLast10})`);
+            continue;
+          }
         }
 
         // Check if it's an OTP message
