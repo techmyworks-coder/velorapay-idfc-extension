@@ -202,14 +202,14 @@ async function fetchOtpFromSmsTracker() {
   }
   console.log(TAG, `📱 SMS Tracker authenticated, polling for OTP...`);
 
-  // Step 2: Poll for OTP — only accept recent messages
-  // Use 5 min lookback to handle clock skew between phone/server/browser
-  const cutoffTs = (otpRequestTs || Date.now()) - 300000;
+  // Step 2: Poll for OTP that arrives AFTER this request
+  // Use first poll to find the newest existing message timestamp as baseline
+  // Then only accept OTPs with received_at AFTER that baseline
   const deadline = Date.now() + 45000; // poll for 45s
   let pollCount = 0;
+  let baselineTs = 0; // will be set from first poll's newest message
 
-  console.log(TAG, `📱 OTP cutoff: ${new Date(cutoffTs).toLocaleTimeString()} — only accepting newer messages`);
-  if (cfg.otpNumber) console.log(TAG, `📱 Phone/sender filter: ${cfg.otpNumber}`);
+  console.log(TAG, `📱 Waiting for NEW OTP (will establish baseline from first poll)`);
 
   while (Date.now() < deadline) {
     pollCount++;
@@ -227,42 +227,35 @@ async function fetchOtpFromSmsTracker() {
 
       const data = await res.json();
       const messages = data.data || data.messages || (Array.isArray(data) ? data : []);
-      if (pollCount <= 3 && messages.length > 0) {
-        const first = messages[0];
-        console.log(TAG, `📱 Poll #${pollCount}: ${messages.length} msgs — newest: "${(first.body||'').slice(0,40)}..." at ${first.received_at || first.created_at} | sender: ${first.sender} | sim: ${JSON.stringify(first.sim_numbers || first.sim_number || 'none').slice(0,80)}`);
-      } else {
-        console.log(TAG, `📱 Poll #${pollCount}: ${messages.length} messages`);
+
+      // First poll: set baseline from newest message timestamp
+      if (pollCount === 1 && baselineTs === 0 && messages.length > 0) {
+        const newestTs = new Date(messages[0].received_at || messages[0].created_at).getTime();
+        baselineTs = newestTs;
+        console.log(TAG, `📱 Poll #1: baseline set to ${new Date(baselineTs).toLocaleTimeString()} (newest existing msg) — waiting for NEW OTP after this`);
+        console.log(TAG, `📱 Poll #1: ${messages.length} msgs — newest: "${(messages[0].body||'').slice(0,50)}..." | sender: ${messages[0].sender}`);
+        // Don't process first poll — these are all existing messages
+        await new Promise(r => setTimeout(r, 3000));
+        continue;
       }
+
+      console.log(TAG, `📱 Poll #${pollCount}: ${messages.length} messages`);
 
       for (const msg of messages) {
         const body = msg.body || '';
         const receivedAt = new Date(msg.received_at || msg.created_at).getTime();
 
-        // Skip old messages (before login click)
-        if (receivedAt < cutoffTs) {
-          if (pollCount <= 2) console.log(TAG, `📱 Skip — too old: ${new Date(receivedAt).toLocaleTimeString()} < cutoff ${new Date(cutoffTs).toLocaleTimeString()} | "${body.slice(0,40)}..."`);
-          continue;
+        // Skip messages at or before baseline (existing before OTP request)
+        if (receivedAt <= baselineTs) {
+          continue; // silent skip — we know these are old
         }
 
-        // Filter by phone number OR sender — match against sim phone or sender field
-        if (cfg.otpNumber) {
-          const filter = cfg.otpNumber.replace(/\D/g, '');
-          const msgSender = (msg.sender || '').toUpperCase();
-          const simPhone = (
-            msg.sim_numbers?.phone_number ||
-            msg.sim_number?.phone_number ||
-            msg.phone_number ||
-            msg.to || ''
-          ).replace(/\D/g, '');
-
-          // Accept if: sender contains filter (e.g. "IDFCFB") OR sim phone matches
-          const senderMatch = filter.length <= 6 && msgSender.includes(filter.toUpperCase());
-          const phoneMatch = simPhone && simPhone.includes(filter.slice(-10));
-
-          if (!senderMatch && !phoneMatch) {
-            if (pollCount <= 2) console.log(TAG, `📱 Skip — no match: sender="${msgSender}" sim="${simPhone}" filter="${filter}"`);
-            continue;
-          }
+        // Filter: accept if sender contains "IDFC" (like BT-IDFCFB-S)
+        // Same approach as idfc-extension — filter by sender, not phone number
+        const msgSender = (msg.sender || '').toUpperCase();
+        if (!msgSender.includes('IDFC')) {
+          if (pollCount <= 2) console.log(TAG, `📱 Skip — not IDFC sender: "${msg.sender}"`);
+          continue;
         }
 
         // Check if it's an OTP message
