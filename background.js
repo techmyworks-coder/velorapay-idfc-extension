@@ -228,7 +228,12 @@ async function fetchOtpFromSmsTracker() {
 
       const data = await res.json();
       const messages = data.data || data.messages || (Array.isArray(data) ? data : []);
-      console.log(TAG, `📱 Poll #${pollCount}: ${messages.length} messages`);
+      if (pollCount <= 3 && messages.length > 0) {
+        const first = messages[0];
+        console.log(TAG, `📱 Poll #${pollCount}: ${messages.length} msgs — newest: "${(first.body||'').slice(0,40)}..." at ${first.received_at || first.created_at} | sender: ${first.sender} | sim: ${JSON.stringify(first.sim_numbers || first.sim_number || 'none').slice(0,80)}`);
+      } else {
+        console.log(TAG, `📱 Poll #${pollCount}: ${messages.length} messages`);
+      }
 
       for (const msg of messages) {
         const body = msg.body || '';
@@ -236,6 +241,7 @@ async function fetchOtpFromSmsTracker() {
 
         // Skip old messages (before login click)
         if (receivedAt < cutoffTs) {
+          if (pollCount <= 2) console.log(TAG, `📱 Skip — too old: ${new Date(receivedAt).toLocaleTimeString()} < cutoff ${new Date(cutoffTs).toLocaleTimeString()} | "${body.slice(0,40)}..."`);
           continue;
         }
 
