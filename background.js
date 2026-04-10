@@ -65,6 +65,21 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
+  if (msg.action === 'fetchOtp') {
+    console.log(TAG, '📱 OTP fetch requested — polling SMS Tracker...');
+    const t0 = Date.now();
+    fetchOtpFromSmsTracker()
+      .then(otp => {
+        console.log(TAG, `📱 OTP received: "${otp}" (${Date.now() - t0}ms)`);
+        sendResponse({ otp });
+      })
+      .catch(e => {
+        console.error(TAG, `❌ OTP fetch failed: ${e.message} (${Date.now() - t0}ms)`);
+        sendResponse({ error: e.message });
+      });
+    return true;
+  }
+
   if (msg.action === 'fetchConfigDetail') {
     console.log(TAG, `📋 Fetching config detail: ${msg.id}`);
     fetch(`https://api.velorapay.in/api/v1/admin/bank-sync/configs/${msg.id}`)
@@ -139,4 +154,89 @@ async function solveCaptchaAI(imageData) {
 
 function getKey(k) {
   return new Promise(r => chrome.storage.local.get(k, d => r(d[k] || '')));
+}
+
+// ── OTP from BharatEleven SMS Tracker ────────────────────────────────────────
+const OTP_PATTERNS = [
+  /\botp\b/i, /one.?time.?(password|code|pin)/i, /verification.?code/i,
+  /\b\d{4,8}\b.{0,30}(otp|code|pin|password|passcode)/i,
+  /(otp|code|pin|password|passcode).{0,30}\b\d{4,8}\b/i,
+  /\b\d{4,8}\b.{0,20}(is your|as your)/i,
+  /\d{4,8}.{0,10}(expire|valid|expires)/i,
+];
+
+async function fetchOtpFromSmsTracker() {
+  const cfg = await new Promise(r => chrome.storage.local.get('smsTracker', d => r(d.smsTracker || {})));
+  if (!cfg.url || !cfg.email || !cfg.password) {
+    throw new Error('SMS Tracker not configured — go to Settings');
+  }
+
+  console.log(TAG, `📱 Logging into SMS Tracker: ${cfg.url}`);
+
+  // Step 1: Login to get auth token
+  const loginRes = await fetch(`${cfg.url}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: cfg.email, password: cfg.password })
+  });
+  if (!loginRes.ok) throw new Error(`SMS Tracker login failed: ${loginRes.status}`);
+
+  // Extract token from set-cookie or response body
+  const setCookie = loginRes.headers.get('set-cookie') || '';
+  const tokenMatch = setCookie.match(/sms_tracker_token=([^;]+)/);
+  let authToken = tokenMatch ? tokenMatch[1] : '';
+  if (!authToken) {
+    const body = await loginRes.json().catch(() => ({}));
+    authToken = body.token || '';
+  }
+  console.log(TAG, `📱 SMS Tracker authenticated, polling for OTP...`);
+
+  // Step 2: Poll for OTP (30s timeout, 2s interval)
+  const triggerTs = Date.now() - 120000; // look back 2 min
+  const deadline = Date.now() + 45000;   // poll for 45s
+
+  while (Date.now() < deadline) {
+    try {
+      const smsUrl = new URL('/api/sms', cfg.url);
+      smsUrl.searchParams.set('limit', '20');
+      smsUrl.searchParams.set('direction', 'incoming');
+      if (authToken) smsUrl.searchParams.set('token', authToken);
+
+      const headers = {};
+      if (authToken && tokenMatch) headers['Cookie'] = `sms_tracker_token=${authToken}`;
+
+      const res = await fetch(smsUrl.toString(), { headers });
+      if (!res.ok) throw new Error(`SMS API ${res.status}`);
+
+      const data = await res.json();
+      const messages = data.data || data.messages || (Array.isArray(data) ? data : []);
+
+      for (const msg of messages) {
+        const body = msg.body || '';
+        const receivedAt = new Date(msg.received_at || msg.created_at).getTime();
+        if (receivedAt < triggerTs) continue;
+
+        // Filter by phone number if set
+        if (cfg.otpNumber) {
+          const simPhone = (msg.sim_numbers?.phone_number || '').replace(/\D/g, '');
+          // Match if the SMS was received on the configured number
+          if (simPhone && !simPhone.includes(cfg.otpNumber.slice(-10))) continue;
+        }
+
+        // Check if it's an OTP message
+        if (!OTP_PATTERNS.some(p => p.test(body))) continue;
+        const codeMatch = body.match(/\b(\d{4,8})\b/);
+        if (codeMatch) {
+          console.log(TAG, `📱 Found OTP: ${codeMatch[1]} from "${msg.sender}" — "${body.slice(0, 80)}"`);
+          return codeMatch[1];
+        }
+      }
+    } catch (e) {
+      console.log(TAG, `📱 Poll error: ${e.message}`);
+    }
+
+    await new Promise(r => setTimeout(r, 2000)); // poll every 2s
+  }
+
+  throw new Error('OTP timeout — no OTP received within 45s');
 }

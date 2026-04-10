@@ -352,6 +352,24 @@ input:focus{border-color:var(--red);}
   </div>
 
   <div class="setting-row">
+    <div class="setting-label">SMS Tracker (OTP Auto-fill)</div>
+    <div class="input-wrap">
+      <input type="text" id="inpSmsUrl" placeholder="https://www.bharateleven.com" />
+    </div>
+    <div class="input-wrap" style="margin-top:6px">
+      <input type="text" id="inpSmsEmail" placeholder="SMS Tracker email" />
+    </div>
+    <div class="input-wrap" style="margin-top:6px">
+      <input type="password" id="inpSmsPwd" placeholder="SMS Tracker password" />
+    </div>
+    <div class="input-wrap" style="margin-top:6px">
+      <input type="text" id="inpOtpNumber" placeholder="Phone number receiving OTP (e.g. 9876543210)" />
+      <button class="save-btn" id="btnSaveSms">Save</button>
+    </div>
+    <div class="hint">BharatEleven SMS Tracker credentials + phone number for auto OTP fill after login.</div>
+  </div>
+
+  <div class="setting-row">
     <div class="setting-label">Sync Interval (seconds)</div>
     <div class="input-wrap">
       <input type="number" id="inpInterval" value="30" min="10" max="300" />

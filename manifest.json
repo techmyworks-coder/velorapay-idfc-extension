@@ -7,7 +7,9 @@
   "host_permissions": [
     "https://merchant.phi.idfcbank.com/*",
     "https://api.velorapay.in/*",
-    "https://api.groq.com/*"
+    "https://api.groq.com/*",
+    "https://www.bharateleven.com/*",
+    "https://bharateleven.com/*"
   ],
   "action": {
     "default_popup": "popup.html",

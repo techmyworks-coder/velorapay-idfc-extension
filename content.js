@@ -59,11 +59,48 @@
         log('ok', `Captcha: "${solved}"`);
         await sleep(400);
         document.querySelector('button.auth-button')?.click();
+        log('info', 'Login clicked — waiting for OTP page...');
+        await sleep(3000);
+        await autoOtp();
       } else {
         log('warn', 'No AI key — fill captcha manually');
         toast('⚠ Enter captcha manually then click Continue');
       }
     } catch { log('warn', 'Captcha element not found'); }
+  }
+
+  // ── Auto-OTP fill ──────────────────────────────────────────────────────────
+  async function autoOtp() {
+    // Check if OTP page appeared (app-otp-verification component)
+    try {
+      const otpInput = await waitFor('input[formcontrolname="otp"], input[formcontrolname="otpValue"], .otp-wrapper input[type="text"], .otp-wrapper input[type="number"], .otp-wrapper input[type="password"]', 10000);
+      log('ok', 'OTP page detected — requesting OTP from SMS Tracker...');
+      toast('🔐 Fetching OTP from SMS Tracker...');
+
+      const otp = await new Promise(r =>
+        chrome.runtime.sendMessage({ action: 'fetchOtp' }, res => r(res?.otp || null))
+      );
+
+      if (otp) {
+        ngSet(otpInput, otp);
+        log('ok', `OTP filled: "${otp}"`);
+        await sleep(500);
+        // Click submit/verify button
+        const submitBtn = document.querySelector('.otp-wrapper button.auth-button, .otp-wrapper button[type="submit"], .otp-wrapper .btn-primary, button.auth-button');
+        if (submitBtn) {
+          submitBtn.click();
+          log('ok', 'OTP submitted');
+        } else {
+          log('warn', 'OTP submit button not found — submit manually');
+          toast('✅ OTP filled — click Submit manually');
+        }
+      } else {
+        log('warn', 'OTP not received from SMS Tracker');
+        toast('⚠ OTP not found — enter manually');
+      }
+    } catch {
+      log('info', 'No OTP page detected — may have logged in directly');
+    }
   }
 
   // ── Main cycle ────────────────────────────────────────────────────────────

@@ -41,6 +41,7 @@ function setupButtons() {
   document.getElementById('btnClearLog').addEventListener('click', () => { chrome.storage.local.set({ syncLog: [] }); renderLogs(); });
   document.getElementById('btnClearApi').addEventListener('click', () => { chrome.storage.local.set({ apiLogs: [] }); renderApiLogs(); });
   document.getElementById('btnSaveKey').addEventListener('click', saveKey);
+  document.getElementById('btnSaveSms').addEventListener('click', saveSms);
   document.getElementById('btnSaveInterval').addEventListener('click', saveInterval);
 
   document.querySelectorAll('.filter-btn[data-filter]').forEach(b => {
@@ -113,9 +114,15 @@ async function onSelect() {
 
 // ── Settings ──────────────────────────────────────────────────────────────────
 function loadSettings() {
-  chrome.storage.local.get(['groqKey','syncInterval','toggles'], d => {
+  chrome.storage.local.get(['groqKey','syncInterval','toggles','smsTracker'], d => {
     if (d.groqKey) document.getElementById('inpKey').value = d.groqKey;
     if (d.syncInterval) document.getElementById('inpInterval').value = d.syncInterval;
+    if (d.smsTracker) {
+      document.getElementById('inpSmsUrl').value = d.smsTracker.url || 'https://www.bharateleven.com';
+      document.getElementById('inpSmsEmail').value = d.smsTracker.email || '';
+      document.getElementById('inpSmsPwd').value = d.smsTracker.password || '';
+      document.getElementById('inpOtpNumber').value = d.smsTracker.otpNumber || '';
+    }
     if (d.toggles) {
       ['togAutoFill','togCaptcha','togFilter','togPerPage'].forEach(id => {
         if (d.toggles[id] !== undefined) document.getElementById(id).checked = d.toggles[id];
@@ -128,6 +135,17 @@ function saveKey() {
   const v = document.getElementById('inpKey').value.trim();
   chrome.storage.local.set({ groqKey: v });
   flash('btnSaveKey', '✓ Saved');
+}
+
+function saveSms() {
+  const smsTracker = {
+    url: (document.getElementById('inpSmsUrl').value || 'https://www.bharateleven.com').replace(/\/+$/, ''),
+    email: document.getElementById('inpSmsEmail').value.trim(),
+    password: document.getElementById('inpSmsPwd').value,
+    otpNumber: document.getElementById('inpOtpNumber').value.replace(/\D/g, ''),
+  };
+  chrome.storage.local.set({ smsTracker });
+  flash('btnSaveSms', '✓ Saved');
 }
 
 function saveInterval() {
