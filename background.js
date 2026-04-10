@@ -3,6 +3,7 @@ const IDFC_URL = 'https://merchant.phi.idfcbank.com/upi-merchant/main/transactio
 const ALARM = 'vp-sync';
 const TAG = '[VeloraPay BG]';
 let otpInFlight = false;
+let otpRequestTs = 0; // timestamp when OTP was requested (to skip older messages)
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.alarms.create(ALARM, { periodInMinutes: 0.667 }); // 40s
@@ -74,6 +75,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return true;
     }
     otpInFlight = true;
+    otpRequestTs = Date.now(); // mark when login was clicked (for filtering old OTPs)
     console.log(TAG, '📱 OTP fetch requested — polling SMS Tracker...');
     const t0 = Date.now();
     fetchOtpFromSmsTracker()
@@ -200,52 +202,80 @@ async function fetchOtpFromSmsTracker() {
   }
   console.log(TAG, `📱 SMS Tracker authenticated, polling for OTP...`);
 
-  // Step 2: Poll for OTP (30s timeout, 2s interval)
-  const triggerTs = Date.now() - 120000; // look back 2 min
-  const deadline = Date.now() + 45000;   // poll for 45s
+  // Step 2: Poll for OTP — only accept messages AFTER the login was clicked
+  // otpRequestTs is set when the content script triggers fetchOtp (≈ when login was clicked)
+  // Subtract 30s buffer for clock skew between phone and server
+  const cutoffTs = (otpRequestTs || Date.now()) - 30000;
+  const deadline = Date.now() + 45000; // poll for 45s
+  let pollCount = 0;
+
+  console.log(TAG, `📱 OTP cutoff: ${new Date(cutoffTs).toLocaleTimeString()} — only accepting newer messages`);
+  if (cfg.otpNumber) console.log(TAG, `📱 Phone filter: ${cfg.otpNumber}`);
 
   while (Date.now() < deadline) {
+    pollCount++;
     try {
       const smsUrl = new URL('/api/sms', cfg.url);
-      smsUrl.searchParams.set('limit', '20');
+      smsUrl.searchParams.set('limit', '10');
       smsUrl.searchParams.set('direction', 'incoming');
       if (authToken) smsUrl.searchParams.set('token', authToken);
 
-      const headers = {};
-      if (authToken && tokenMatch) headers['Cookie'] = `sms_tracker_token=${authToken}`;
+      const fetchHeaders = {};
+      if (authToken && tokenMatch) fetchHeaders['Cookie'] = `sms_tracker_token=${authToken}`;
 
-      const res = await fetch(smsUrl.toString(), { headers });
+      const res = await fetch(smsUrl.toString(), { headers: fetchHeaders });
       if (!res.ok) throw new Error(`SMS API ${res.status}`);
 
       const data = await res.json();
       const messages = data.data || data.messages || (Array.isArray(data) ? data : []);
+      console.log(TAG, `📱 Poll #${pollCount}: ${messages.length} messages`);
 
       for (const msg of messages) {
         const body = msg.body || '';
         const receivedAt = new Date(msg.received_at || msg.created_at).getTime();
-        if (receivedAt < triggerTs) continue;
 
-        // Filter by phone number if set
+        // Skip old messages (before login click)
+        if (receivedAt < cutoffTs) {
+          continue;
+        }
+
+        // Filter by phone number if configured
         if (cfg.otpNumber) {
-          const simPhone = (msg.sim_numbers?.phone_number || '').replace(/\D/g, '');
-          // Match if the SMS was received on the configured number
-          if (simPhone && !simPhone.includes(cfg.otpNumber.slice(-10))) continue;
+          const last10 = cfg.otpNumber.slice(-10);
+          // Check sim_numbers (nested object) or sim phone field
+          const simPhone = (
+            msg.sim_numbers?.phone_number ||
+            msg.sim_number?.phone_number ||
+            msg.phone_number ||
+            msg.to ||
+            ''
+          ).replace(/\D/g, '');
+          if (simPhone && !simPhone.includes(last10)) {
+            console.log(TAG, `📱 Skip — wrong number: ${simPhone} (want ${last10})`);
+            continue;
+          }
         }
 
         // Check if it's an OTP message
-        if (!OTP_PATTERNS.some(p => p.test(body))) continue;
+        const isOtp = OTP_PATTERNS.some(p => p.test(body));
+        if (!isOtp) {
+          console.log(TAG, `📱 Skip — not OTP: "${body.slice(0, 50)}..."`);
+          continue;
+        }
+
         const codeMatch = body.match(/\b(\d{4,8})\b/);
         if (codeMatch) {
-          console.log(TAG, `📱 Found OTP: ${codeMatch[1]} from "${msg.sender}" — "${body.slice(0, 80)}"`);
+          console.log(TAG, `📱 ✓ Found OTP: ${codeMatch[1]} from "${msg.sender}" at ${new Date(receivedAt).toLocaleTimeString()}`);
+          console.log(TAG, `📱 Message: "${body.slice(0, 100)}"`);
           return codeMatch[1];
         }
       }
     } catch (e) {
-      console.log(TAG, `📱 Poll error: ${e.message}`);
+      console.log(TAG, `📱 Poll #${pollCount} error: ${e.message}`);
     }
 
-    await new Promise(r => setTimeout(r, 2000)); // poll every 2s
+    await new Promise(r => setTimeout(r, 3000)); // poll every 3s
   }
 
-  throw new Error('OTP timeout — no OTP received within 45s');
+  throw new Error(`OTP timeout — no OTP received within 45s (${pollCount} polls)`);
 }
