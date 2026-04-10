@@ -202,15 +202,14 @@ async function fetchOtpFromSmsTracker() {
   }
   console.log(TAG, `📱 SMS Tracker authenticated, polling for OTP...`);
 
-  // Step 2: Poll for OTP — only accept messages AFTER the login was clicked
-  // otpRequestTs is set when the content script triggers fetchOtp (≈ when login was clicked)
-  // Subtract 30s buffer for clock skew between phone and server
-  const cutoffTs = (otpRequestTs || Date.now()) - 30000;
+  // Step 2: Poll for OTP — only accept recent messages
+  // Use 5 min lookback to handle clock skew between phone/server/browser
+  const cutoffTs = (otpRequestTs || Date.now()) - 300000;
   const deadline = Date.now() + 45000; // poll for 45s
   let pollCount = 0;
 
   console.log(TAG, `📱 OTP cutoff: ${new Date(cutoffTs).toLocaleTimeString()} — only accepting newer messages`);
-  if (cfg.otpNumber) console.log(TAG, `📱 Phone filter: ${cfg.otpNumber}`);
+  if (cfg.otpNumber) console.log(TAG, `📱 Phone/sender filter: ${cfg.otpNumber}`);
 
   while (Date.now() < deadline) {
     pollCount++;
@@ -245,19 +244,23 @@ async function fetchOtpFromSmsTracker() {
           continue;
         }
 
-        // Filter by phone number if configured
+        // Filter by phone number OR sender — match against sim phone or sender field
         if (cfg.otpNumber) {
-          const last10 = cfg.otpNumber.slice(-10);
-          // Check sim_numbers (nested object) or sim phone field
+          const filter = cfg.otpNumber.replace(/\D/g, '');
+          const msgSender = (msg.sender || '').toUpperCase();
           const simPhone = (
             msg.sim_numbers?.phone_number ||
             msg.sim_number?.phone_number ||
             msg.phone_number ||
-            msg.to ||
-            ''
+            msg.to || ''
           ).replace(/\D/g, '');
-          if (simPhone && !simPhone.includes(last10)) {
-            console.log(TAG, `📱 Skip — wrong number: ${simPhone} (want ${last10})`);
+
+          // Accept if: sender contains filter (e.g. "IDFCFB") OR sim phone matches
+          const senderMatch = filter.length <= 6 && msgSender.includes(filter.toUpperCase());
+          const phoneMatch = simPhone && simPhone.includes(filter.slice(-10));
+
+          if (!senderMatch && !phoneMatch) {
+            if (pollCount <= 2) console.log(TAG, `📱 Skip — no match: sender="${msgSender}" sim="${simPhone}" filter="${filter}"`);
             continue;
           }
         }
