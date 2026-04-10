@@ -2,6 +2,7 @@
 const IDFC_URL = 'https://merchant.phi.idfcbank.com/upi-merchant/main/transactions';
 const ALARM = 'vp-sync';
 const TAG = '[VeloraPay BG]';
+let otpInFlight = false;
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.alarms.create(ALARM, { periodInMinutes: 0.667 }); // 40s
@@ -66,6 +67,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.action === 'fetchOtp') {
+    // Guard: reject if an OTP request is already in-flight
+    if (otpInFlight) {
+      console.log(TAG, '📱 OTP request already in-flight — rejecting duplicate');
+      sendResponse({ error: 'OTP_IN_FLIGHT' });
+      return true;
+    }
+    otpInFlight = true;
     console.log(TAG, '📱 OTP fetch requested — polling SMS Tracker...');
     const t0 = Date.now();
     fetchOtpFromSmsTracker()
@@ -76,7 +84,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       .catch(e => {
         console.error(TAG, `❌ OTP fetch failed: ${e.message} (${Date.now() - t0}ms)`);
         sendResponse({ error: e.message });
-      });
+      })
+      .finally(() => { otpInFlight = false; });
     return true;
   }
 

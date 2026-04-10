@@ -33,74 +33,177 @@
     }));
   }
 
-  // ── Auto-login ─────────────────────────────────────────────────────────────
+  // ── Auto-login with retry (max 3 attempts) ─────────────────────────────────
+  const MAX_LOGIN_ATTEMPTS = 3;
+
   async function autoLogin() {
     const cfg = await getConfig();
     if (!cfg) return log('warn', 'No account selected — open extension popup');
 
-    log('info', `Auto-fill: ${cfg.account_name}`);
+    for (let attempt = 1; attempt <= MAX_LOGIN_ATTEMPTS; attempt++) {
+      log('info', `Login attempt ${attempt}/${MAX_LOGIN_ATTEMPTS}: ${cfg.account_name}`);
+
+      const result = await tryLoginOnce(cfg);
+
+      if (result === 'success') {
+        log('ok', `Login+OTP succeeded on attempt ${attempt}`);
+        return;
+      }
+      if (result === 'no_fields') {
+        log('warn', 'Login fields not found — aborting');
+        return; // not retryable
+      }
+      if (result === 'no_captcha_key') {
+        toast('⚠ Enter captcha manually then click Continue');
+        return; // manual intervention needed
+      }
+
+      // Failed — retry if attempts remain
+      if (attempt < MAX_LOGIN_ATTEMPTS) {
+        log('warn', `Attempt ${attempt} failed (${result}) — retrying in 5s...`);
+        toast(`⚠ Attempt ${attempt} failed — retrying...`);
+        await sleep(5000);
+        // Refresh captcha before retry (click refresh button if exists)
+        const refreshBtn = document.querySelector('.refresh-button, .refresh-button-invalid, [mattooltip*="Refresh"], button[aria-label*="refresh"]');
+        if (refreshBtn) { refreshBtn.click(); await sleep(1500); }
+      } else {
+        log('error', `All ${MAX_LOGIN_ATTEMPTS} login attempts failed — giving up`);
+        toast(`❌ Login failed after ${MAX_LOGIN_ATTEMPTS} attempts — try manually`);
+      }
+    }
+  }
+
+  // Single login+OTP attempt — returns 'success' | 'no_fields' | 'no_captcha_key' | 'captcha_fail' | 'otp_fail' | 'login_error'
+  async function tryLoginOnce(cfg) {
+    // Fill credentials
     try {
       const u = await waitFor('input[formcontrolname="newusername"]', 5000);
       const p = await waitFor('input[formcontrolname="newpassword"]', 5000);
       ngSet(u, cfg.login_username);
       ngSet(p, cfg.login_password);
       log('ok', 'Credentials filled');
-    } catch { log('warn', 'Login fields not found'); return; }
+    } catch { return 'no_fields'; }
 
-    // Captcha
+    // Solve captcha
     try {
       const img = await waitFor('img.captcha-image', 3000);
       const solved = await new Promise(r =>
         chrome.runtime.sendMessage({ action: 'solveCaptcha', imageData: img.src }, res => r(res?.text || null))
       );
-      if (solved) {
-        const ci = await waitFor('input[formcontrolname="captcha"]', 2000);
-        ngSet(ci, solved);
-        log('ok', `Captcha: "${solved}"`);
-        await sleep(400);
-        document.querySelector('button.auth-button')?.click();
-        log('info', 'Login clicked — waiting for OTP page...');
-        await sleep(3000);
-        await autoOtp();
-      } else {
-        log('warn', 'No AI key — fill captcha manually');
-        toast('⚠ Enter captcha manually then click Continue');
-      }
-    } catch { log('warn', 'Captcha element not found'); }
+      if (!solved) return 'no_captcha_key';
+
+      const ci = await waitFor('input[formcontrolname="captcha"]', 2000);
+      ngSet(ci, solved);
+      log('ok', `Captcha: "${solved}"`);
+      await sleep(400);
+      document.querySelector('button.auth-button')?.click();
+      log('info', 'Login clicked — waiting for OTP page...');
+    } catch { return 'captcha_fail'; }
+
+    // Check if login failed (error message on same page)
+    await sleep(3000);
+    const errorEl = document.querySelector('.alert-danger, .error-message, .invalid-feedback[style*="block"], .alert-wrapper .alert');
+    if (errorEl && errorEl.textContent.trim()) {
+      log('warn', `Login error: "${errorEl.textContent.trim().slice(0, 80)}"`);
+      return 'login_error';
+    }
+
+    // Still on login page? (captcha might have been wrong)
+    if (document.querySelector('input[formcontrolname="captcha"]')) {
+      log('warn', 'Still on login page — captcha may be wrong');
+      return 'captcha_fail';
+    }
+
+    // Try OTP
+    const otpResult = await autoOtp();
+    return otpResult;
   }
 
-  // ── Auto-OTP fill ──────────────────────────────────────────────────────────
+  // ── Auto-OTP fill (max 2 OTP attempts) ─────────────────────────────────────
+  const MAX_OTP_ATTEMPTS = 2;
+
   async function autoOtp() {
-    // Check if OTP page appeared (app-otp-verification component)
+    // Check if OTP page appeared
+    let otpInput;
     try {
-      const otpInput = await waitFor('input[formcontrolname="otp"], input[formcontrolname="otpValue"], .otp-wrapper input[type="text"], .otp-wrapper input[type="number"], .otp-wrapper input[type="password"]', 10000);
-      log('ok', 'OTP page detected — requesting OTP from SMS Tracker...');
-      toast('🔐 Fetching OTP from SMS Tracker...');
-
-      const otp = await new Promise(r =>
-        chrome.runtime.sendMessage({ action: 'fetchOtp' }, res => r(res?.otp || null))
-      );
-
-      if (otp) {
-        ngSet(otpInput, otp);
-        log('ok', `OTP filled: "${otp}"`);
-        await sleep(500);
-        // Click submit/verify button
-        const submitBtn = document.querySelector('.otp-wrapper button.auth-button, .otp-wrapper button[type="submit"], .otp-wrapper .btn-primary, button.auth-button');
-        if (submitBtn) {
-          submitBtn.click();
-          log('ok', 'OTP submitted');
-        } else {
-          log('warn', 'OTP submit button not found — submit manually');
-          toast('✅ OTP filled — click Submit manually');
-        }
-      } else {
-        log('warn', 'OTP not received from SMS Tracker');
-        toast('⚠ OTP not found — enter manually');
-      }
+      otpInput = await waitFor('input[formcontrolname="otp"], input[formcontrolname="otpValue"], .otp-wrapper input[type="text"], .otp-wrapper input[type="number"], .otp-wrapper input[type="password"]', 10000);
     } catch {
       log('info', 'No OTP page detected — may have logged in directly');
+      return 'success'; // no OTP needed = success
     }
+
+    log('ok', 'OTP page detected');
+
+    for (let attempt = 1; attempt <= MAX_OTP_ATTEMPTS; attempt++) {
+      log('info', `OTP attempt ${attempt}/${MAX_OTP_ATTEMPTS} — requesting from SMS Tracker...`);
+      toast(`🔐 Fetching OTP (attempt ${attempt})...`);
+
+      // Wait between OTP attempts to avoid rapid-fire requests
+      if (attempt > 1) {
+        log('info', 'Waiting 10s before next OTP request...');
+        await sleep(10000);
+        // Re-request OTP if there's a resend button
+        const resendBtn = document.querySelector('button[class*="resend"], a[class*="resend"], .resend-otp, [mattooltip*="Resend"]');
+        if (resendBtn) { resendBtn.click(); log('info', 'Clicked resend OTP'); await sleep(3000); }
+      }
+
+      const otpRes = await new Promise(r =>
+        chrome.runtime.sendMessage({ action: 'fetchOtp' }, res => r(res || {}))
+      );
+
+      if (otpRes.error === 'OTP_IN_FLIGHT') {
+        log('warn', 'Another OTP request in progress — waiting...');
+        await sleep(5000);
+        continue;
+      }
+
+      if (!otpRes.otp) {
+        log('warn', `OTP attempt ${attempt} — not received`);
+        if (attempt === MAX_OTP_ATTEMPTS) {
+          toast('⚠ OTP not found — enter manually');
+          return 'otp_fail';
+        }
+        continue;
+      }
+
+      // Re-find the OTP input (page may have refreshed)
+      try {
+        otpInput = document.querySelector('input[formcontrolname="otp"], input[formcontrolname="otpValue"], .otp-wrapper input[type="text"], .otp-wrapper input[type="number"], .otp-wrapper input[type="password"]');
+      } catch {}
+
+      if (!otpInput) {
+        log('warn', 'OTP input disappeared');
+        return 'otp_fail';
+      }
+
+      ngSet(otpInput, otpRes.otp);
+      log('ok', `OTP filled: "${otpRes.otp}"`);
+      await sleep(500);
+
+      // Click submit
+      const submitBtn = document.querySelector('.otp-wrapper button.auth-button, .otp-wrapper button[type="submit"], .otp-wrapper .btn-primary, button.auth-button');
+      if (submitBtn) {
+        submitBtn.click();
+        log('ok', 'OTP submitted');
+      } else {
+        log('warn', 'OTP submit button not found — submit manually');
+        toast('✅ OTP filled — click Submit manually');
+      }
+
+      // Check if OTP was accepted (wait a bit then check if still on OTP page)
+      await sleep(3000);
+      const stillOnOtp = document.querySelector('.otp-wrapper, app-otp-verification');
+      const otpError = document.querySelector('.otp-wrapper .alert-danger, .otp-wrapper .error-message, .otp-wrapper .invalid-feedback');
+      if (stillOnOtp && otpError && otpError.textContent.trim()) {
+        log('warn', `OTP rejected: "${otpError.textContent.trim().slice(0, 80)}"`);
+        if (attempt < MAX_OTP_ATTEMPTS) continue;
+        return 'otp_fail';
+      }
+
+      return 'success';
+    }
+
+    return 'otp_fail';
   }
 
   // ── Main cycle ────────────────────────────────────────────────────────────
