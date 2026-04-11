@@ -44,8 +44,9 @@
     }));
   }
 
-  // ── Auto-login: login+captcha once, then up to 3 OTP attempts (with resend) ─
+  // ── Auto-login: credentials once, up to 5 in-page captcha retries, then 3 OTP attempts ─
   const MAX_OTP_ATTEMPTS = 3;
+  const MAX_CAPTCHA_RETRIES = 5; // in-page captcha refresh attempts per login cycle
 
   async function autoLogin() {
     const cfg = await getConfig();
@@ -73,9 +74,9 @@
       return;
     }
 
-    log('info', `Logging in: ${cfg.account_name} (attempt ${failCount + 1}/${MAX_LOGIN_CYCLES})`);
+    log('info', `Logging in: ${cfg.account_name} (cycle ${failCount + 1}/${MAX_LOGIN_CYCLES})`);
 
-    // Step 1: Fill credentials (once)
+    // Step 1: Fill credentials (once per login cycle)
     try {
       const u = await waitFor('input[formcontrolname="newusername"]', 5000);
       const p = await waitFor('input[formcontrolname="newpassword"]', 5000);
@@ -87,45 +88,83 @@
       return; // don't increment failCount — this is a structural issue
     }
 
-    // Step 2: Solve captcha (once)
-    try {
-      const img = await waitFor('img.captcha-image', 3000);
-      const solved = await new Promise(r =>
-        chrome.runtime.sendMessage({ action: 'solveCaptcha', imageData: img.src }, res => r(res?.text || null))
-      );
+    // Step 2: Captcha loop — retry in-page (refresh button) on failure, up to MAX_CAPTCHA_RETRIES
+    let captchaOk = false;
+    for (let cAttempt = 1; cAttempt <= MAX_CAPTCHA_RETRIES; cAttempt++) {
+      log('info', `Captcha attempt ${cAttempt}/${MAX_CAPTCHA_RETRIES}`);
+
+      // Re-fill credentials if they were cleared by captcha refresh (Angular sometimes resets the form)
+      const u = document.querySelector('input[formcontrolname="newusername"]');
+      const p = document.querySelector('input[formcontrolname="newpassword"]');
+      if (u && !u.value) ngSet(u, cfg.login_username);
+      if (p && !p.value) ngSet(p, cfg.login_password);
+
+      // Solve captcha
+      let solved;
+      try {
+        const img = await waitFor('img.captcha-image', 3000);
+        solved = await new Promise(r =>
+          chrome.runtime.sendMessage({ action: 'solveCaptcha', imageData: img.src }, res => r(res?.text || null))
+        );
+      } catch {
+        log('warn', 'Captcha image not found');
+        await refreshCaptcha();
+        continue;
+      }
+
       if (!solved) {
-        toast('⚠ Enter captcha manually then click Continue');
+        toast('⚠ Groq key missing — enter captcha manually');
         return;
       }
 
-      const ci = await waitFor('input[formcontrolname="captcha"]', 2000);
-      ngSet(ci, solved);
-      log('ok', `Captcha: "${solved}"`);
-      await sleep(400);
-      document.querySelector('button.auth-button')?.click();
-      log('info', 'Login clicked — waiting for OTP page...');
-    } catch {
-      log('error', 'Captcha solve failed');
-      return;
+      // Fill + submit
+      try {
+        const ci = await waitFor('input[formcontrolname="captcha"]', 2000);
+        ngSet(ci, solved);
+        log('ok', `Captcha filled: "${solved}"`);
+        await sleep(400);
+        document.querySelector('button.auth-button')?.click();
+        log('info', 'Login clicked — checking result...');
+      } catch {
+        log('warn', 'Captcha input not found');
+        await refreshCaptcha();
+        continue;
+      }
+
+      // Wait for result
+      await sleep(3000);
+
+      // Success indicator: OTP page appeared OR captcha input is gone AND no error
+      const stillHasCaptcha = !!document.querySelector('input[formcontrolname="captcha"]');
+      const errorEl = document.querySelector('.alert-danger, .error-message, .invalid-feedback[style*="block"], .alert-wrapper .alert');
+      const errorText = errorEl ? errorEl.textContent.trim() : '';
+
+      if (!stillHasCaptcha && !errorText) {
+        log('ok', 'Captcha accepted — proceeding to OTP');
+        captchaOk = true;
+        break;
+      }
+
+      // Failed — identify why
+      if (errorText && /credential|username|password|blocked|locked/i.test(errorText)) {
+        log('error', `Credential error: "${errorText.slice(0, 80)}" — not retryable`);
+        toast(`❌ ${errorText.slice(0, 60)}`);
+        await bumpFailAndReload();
+        return;
+      }
+
+      log('warn', `Captcha wrong (${errorText || 'still on login page'}) — refreshing captcha`);
+      await refreshCaptcha();
+      // loop again
     }
 
-    // Step 3: Check if login succeeded (captcha correct?)
-    await sleep(3000);
-    const errorEl = document.querySelector('.alert-danger, .error-message, .invalid-feedback[style*="block"], .alert-wrapper .alert');
-    if (errorEl && errorEl.textContent.trim()) {
-      log('warn', `Login error: "${errorEl.textContent.trim().slice(0, 80)}"`);
-      toast('⚠ Login failed — reloading to retry...');
+    if (!captchaOk) {
+      log('error', `Captcha failed ${MAX_CAPTCHA_RETRIES} times — reloading page`);
       await bumpFailAndReload();
       return;
     }
 
-    if (document.querySelector('input[formcontrolname="captcha"]')) {
-      log('warn', 'Still on login page — captcha may be wrong, reloading...');
-      await bumpFailAndReload();
-      return;
-    }
-
-    // Step 4: OTP — up to 3 attempts with resend
+    // Step 3: OTP — up to 3 attempts with resend
     const otpResult = await autoOtp();
     if (otpResult === 'success') {
       log('ok', 'Login+OTP succeeded');
@@ -134,6 +173,21 @@
       log('error', `OTP failed after ${MAX_OTP_ATTEMPTS} attempts — reloading to start over...`);
       toast('❌ OTP failed — reloading to retry login...');
       await bumpFailAndReload();
+    }
+  }
+
+  // Click the captcha refresh button (reloads captcha image without full page reload)
+  async function refreshCaptcha() {
+    const refreshBtn = document.querySelector(
+      '.refresh-button, .refresh-button-invalid, [mattooltip*="Refresh"], button[aria-label*="refresh"], img.refresh-icon, .captcha-refresh'
+    );
+    if (refreshBtn) {
+      refreshBtn.click();
+      log('info', 'Clicked captcha refresh');
+      await sleep(1500); // wait for new captcha image to load
+    } else {
+      log('warn', 'Captcha refresh button not found — waiting briefly');
+      await sleep(1500);
     }
   }
 

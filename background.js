@@ -144,9 +144,9 @@ async function solveCaptchaAI(imageData) {
       model: 'meta-llama/llama-4-scout-17b-16e-instruct',
       messages: [{ role: 'user', content: [
         { type: 'image_url', image_url: { url: `data:image/png;base64,${base64Data}` } },
-        { type: 'text', text: 'Read this CAPTCHA image. Return ONLY the exact characters left to right, no spaces, no explanation.' }
+        { type: 'text', text: 'This is an IDFC bank CAPTCHA. It contains EXACTLY 8 alphanumeric characters (lowercase letters a-z and digits 0-9). Read the characters left to right. Return ONLY those 8 characters — no spaces, no quotes, no explanation, no prefix. If unsure of a character, make your best guess. The output MUST be exactly 8 characters long.' }
       ]}],
-      max_tokens: 30,
+      max_tokens: 20,
       temperature: 0
     })
   });
@@ -159,7 +159,16 @@ async function solveCaptchaAI(imageData) {
 
   const d = await res.json();
   const raw = d.choices?.[0]?.message?.content?.trim() || '';
-  const cleaned = raw.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+  let cleaned = raw.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+
+  // Enforce 8-char length: trim if too long, log warning if too short
+  if (cleaned.length > 8) {
+    console.warn(TAG, `🔐 Groq returned ${cleaned.length} chars, trimming to 8: "${cleaned}" → "${cleaned.slice(0, 8)}"`);
+    cleaned = cleaned.slice(0, 8);
+  } else if (cleaned.length < 8) {
+    console.warn(TAG, `🔐 Groq returned only ${cleaned.length} chars (expected 8): "${cleaned}"`);
+  }
+
   console.log(TAG, `🔐 Groq raw: "${raw}" → cleaned: "${cleaned}"`);
   return cleaned;
 }
