@@ -121,19 +121,66 @@ async function callAPI(endpoint, payload) {
   return { ok: res.ok, status: res.status, data, url, ts: new Date().toISOString() };
 }
 
-// ── CAPTCHA solver using Groq (FREE — Llama 4 Scout vision, ~34ms) ───────────
+// ── CAPTCHA solver using Groq (Llama 4 Maverick vision, ~100ms) ──────────────
 // Get free API key at: https://console.groq.com/keys
 // Set it in the extension popup as "Groq API Key"
+//
+// Strategy:
+// - Use Llama 4 Maverick (more accurate than Scout)
+// - Do up to 3 samples. Only accept responses that are exactly 8 lowercase alnum chars.
+// - If 2+ samples agree on the same 8-char answer, return it immediately (majority vote).
+// - Otherwise return the first valid 8-char sample.
+const CAPTCHA_MODEL = 'meta-llama/llama-4-maverick-17b-128e-instruct';
+const CAPTCHA_PROMPT = 'This is an 8-character alphanumeric CAPTCHA from an IDFC bank login page. It contains ONLY lowercase letters (a-z) and digits (0-9). Read the characters from left to right. Return ONLY the 8 characters. No spaces, no quotes, no explanation, no prefixes or suffixes. The output must be EXACTLY 8 characters — not 7, not 9. If unsure about a character, use your best guess. Common confusions to avoid: 9 vs g, 1 vs l vs i, 0 vs o, 5 vs s.';
+const CAPTCHA_MAX_SAMPLES = 3;
+
 async function solveCaptchaAI(imageData) {
   const key = await getKey('groqKey');
   if (!key) {
     console.error(TAG, '🔐 No Groq API key set — get one free at console.groq.com/keys');
     throw new Error('NO_KEY');
   }
-  console.log(TAG, '🔐 Sending captcha to Groq Llama 4 Scout...');
   const base64Data = imageData.replace(/^data:image\/\w+;base64,/, '');
-  console.log(TAG, `🔐 Image size: ${Math.round(base64Data.length * 0.75 / 1024)}KB`);
+  console.log(TAG, `🔐 Solving captcha (${Math.round(base64Data.length * 0.75 / 1024)}KB) via ${CAPTCHA_MODEL}`);
 
+  const samples = [];
+  let firstValid = null;
+
+  for (let i = 1; i <= CAPTCHA_MAX_SAMPLES; i++) {
+    try {
+      const raw = await callGroqVision(base64Data, key);
+      const cleaned = raw.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+      const valid = cleaned.length === 8;
+      console.log(TAG, `🔐 Sample ${i}/${CAPTCHA_MAX_SAMPLES}: raw="${raw}" clean="${cleaned}" ${valid ? '✓' : `✗ (${cleaned.length} chars)`}`);
+
+      if (!valid) continue;
+
+      samples.push(cleaned);
+      if (!firstValid) firstValid = cleaned;
+
+      // Majority vote: if any answer now has 2+ occurrences, return it
+      const counts = {};
+      for (const s of samples) counts[s] = (counts[s] || 0) + 1;
+      const winner = Object.entries(counts).find(([, c]) => c >= 2);
+      if (winner) {
+        console.log(TAG, `🔐 ✓ Majority vote (${winner[1]}/${samples.length}): "${winner[0]}"`);
+        return winner[0];
+      }
+    } catch (e) {
+      console.error(TAG, `🔐 Sample ${i} error: ${e.message}`);
+    }
+  }
+
+  if (firstValid) {
+    console.log(TAG, `🔐 No majority — using first valid sample: "${firstValid}"`);
+    return firstValid;
+  }
+
+  console.error(TAG, `🔐 All ${CAPTCHA_MAX_SAMPLES} samples failed to return 8 chars`);
+  throw new Error('Captcha samples all invalid length');
+}
+
+async function callGroqVision(base64Data, key) {
   const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
     method: 'POST',
     headers: {
@@ -141,36 +188,23 @@ async function solveCaptchaAI(imageData) {
       'Authorization': `Bearer ${key}`
     },
     body: JSON.stringify({
-      model: 'meta-llama/llama-4-scout-17b-16e-instruct',
+      model: CAPTCHA_MODEL,
       messages: [{ role: 'user', content: [
         { type: 'image_url', image_url: { url: `data:image/png;base64,${base64Data}` } },
-        { type: 'text', text: 'This is an IDFC bank CAPTCHA. It contains EXACTLY 8 alphanumeric characters (lowercase letters a-z and digits 0-9). Read the characters left to right. Return ONLY those 8 characters — no spaces, no quotes, no explanation, no prefix. If unsure of a character, make your best guess. The output MUST be exactly 8 characters long.' }
+        { type: 'text', text: CAPTCHA_PROMPT }
       ]}],
       max_tokens: 20,
-      temperature: 0
+      temperature: 0.2 // slight variance so retries can diverge
     })
   });
 
   if (!res.ok) {
     const err = await res.text().catch(() => '');
-    console.error(TAG, `🔐 Groq API error: ${res.status}`, err.slice(0, 200));
     throw new Error(`Groq ${res.status}: ${err.slice(0, 100)}`);
   }
 
   const d = await res.json();
-  const raw = d.choices?.[0]?.message?.content?.trim() || '';
-  let cleaned = raw.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
-
-  // Enforce 8-char length: trim if too long, log warning if too short
-  if (cleaned.length > 8) {
-    console.warn(TAG, `🔐 Groq returned ${cleaned.length} chars, trimming to 8: "${cleaned}" → "${cleaned.slice(0, 8)}"`);
-    cleaned = cleaned.slice(0, 8);
-  } else if (cleaned.length < 8) {
-    console.warn(TAG, `🔐 Groq returned only ${cleaned.length} chars (expected 8): "${cleaned}"`);
-  }
-
-  console.log(TAG, `🔐 Groq raw: "${raw}" → cleaned: "${cleaned}"`);
-  return cleaned;
+  return (d.choices?.[0]?.message?.content || '').trim();
 }
 
 function getKey(k) {
