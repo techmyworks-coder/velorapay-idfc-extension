@@ -121,18 +121,20 @@ async function callAPI(endpoint, payload) {
   return { ok: res.ok, status: res.status, data, url, ts: new Date().toISOString() };
 }
 
-// ── CAPTCHA solver using Groq (Llama 4 Maverick vision, ~100ms) ──────────────
+// ── CAPTCHA solver using Groq (Llama 4 Scout — only vision model on Groq) ────
 // Get free API key at: https://console.groq.com/keys
 // Set it in the extension popup as "Groq API Key"
 //
 // Strategy:
-// - Use Llama 4 Maverick (more accurate than Scout)
-// - Do up to 3 samples. Only accept responses that are exactly 8 lowercase alnum chars.
-// - If 2+ samples agree on the same 8-char answer, return it immediately (majority vote).
-// - Otherwise return the first valid 8-char sample.
-const CAPTCHA_MODEL = 'meta-llama/llama-4-maverick-17b-128e-instruct';
+// - Upscale the small captcha (~2KB) 3x via OffscreenCanvas — OCR accuracy scales with pixel count
+// - Sample Scout up to 3 times with temperature 0.2 (retries can diverge from same wrong answer)
+// - Only accept samples that return exactly 8 alnum chars
+// - Majority vote: 2+ samples agreeing → return that answer immediately
+// - Otherwise return first valid 8-char sample
+const CAPTCHA_MODEL = 'meta-llama/llama-4-scout-17b-16e-instruct';
 const CAPTCHA_PROMPT = 'This is an 8-character alphanumeric CAPTCHA from an IDFC bank login page. It contains ONLY lowercase letters (a-z) and digits (0-9). Read the characters from left to right. Return ONLY the 8 characters. No spaces, no quotes, no explanation, no prefixes or suffixes. The output must be EXACTLY 8 characters — not 7, not 9. If unsure about a character, use your best guess. Common confusions to avoid: 9 vs g, 1 vs l vs i, 0 vs o, 5 vs s.';
 const CAPTCHA_MAX_SAMPLES = 3;
+const CAPTCHA_UPSCALE = 3; // 3x = 9x pixels
 
 async function solveCaptchaAI(imageData) {
   const key = await getKey('groqKey');
@@ -140,8 +142,19 @@ async function solveCaptchaAI(imageData) {
     console.error(TAG, '🔐 No Groq API key set — get one free at console.groq.com/keys');
     throw new Error('NO_KEY');
   }
-  const base64Data = imageData.replace(/^data:image\/\w+;base64,/, '');
-  console.log(TAG, `🔐 Solving captcha (${Math.round(base64Data.length * 0.75 / 1024)}KB) via ${CAPTCHA_MODEL}`);
+
+  const origBase64 = imageData.replace(/^data:image\/\w+;base64,/, '');
+  console.log(TAG, `🔐 Original captcha: ${Math.round(origBase64.length * 0.75 / 1024)}KB`);
+
+  // Upscale the captcha for better OCR accuracy
+  let base64Data;
+  try {
+    base64Data = await upscaleImage(imageData, CAPTCHA_UPSCALE);
+    console.log(TAG, `🔐 Upscaled ${CAPTCHA_UPSCALE}x → ${Math.round(base64Data.length * 0.75 / 1024)}KB`);
+  } catch (e) {
+    console.warn(TAG, `🔐 Upscale failed (${e.message}) — using original image`);
+    base64Data = origBase64;
+  }
 
   const samples = [];
   let firstValid = null;
@@ -178,6 +191,27 @@ async function solveCaptchaAI(imageData) {
 
   console.error(TAG, `🔐 All ${CAPTCHA_MAX_SAMPLES} samples failed to return 8 chars`);
   throw new Error('Captcha samples all invalid length');
+}
+
+// Upscale a base64 image NxN using OffscreenCanvas (works in MV3 service workers)
+async function upscaleImage(dataUrl, scale) {
+  const blob = await (await fetch(dataUrl)).blob();
+  const bitmap = await createImageBitmap(blob);
+  const w = bitmap.width * scale;
+  const h = bitmap.height * scale;
+  const canvas = new OffscreenCanvas(w, h);
+  const ctx = canvas.getContext('2d');
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(bitmap, 0, 0, w, h);
+  bitmap.close();
+  const outBlob = await canvas.convertToBlob({ type: 'image/png' });
+  // Blob → base64
+  const buf = await outBlob.arrayBuffer();
+  const bytes = new Uint8Array(buf);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary);
 }
 
 async function callGroqVision(base64Data, key) {
