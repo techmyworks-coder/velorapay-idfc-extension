@@ -213,12 +213,18 @@ async function fetchOtpFromSmsTracker(sinceTs) {
   console.log(TAG, `📱 SMS Tracker authenticated, polling for OTP...`);
 
   // Step 2: Poll for OTP
-  // Strategy: only accept OTPs received AFTER sinceTs (the moment login/resend was clicked).
-  // This prevents returning stale OTPs from previous login attempts.
-  const cutoffTs = sinceTs;
+  // Strategy: track which OTP message IDs we've already returned (persisted across sessions).
+  // Return the first IDFC OTP from the inbox whose ID is NOT in returnedOtpIds.
+  // This is clock-skew-proof AND handles the race where OTP arrives before first poll.
+  // Staleness is prevented because each message is returned at most once — a previous
+  // login attempt's OTP will be in returnedOtpIds and skipped.
   const deadline = Date.now() + 45000;
   let pollCount = 0;
-  console.log(TAG, `📱 Looking for IDFC OTP newer than ${new Date(cutoffTs).toLocaleTimeString()}`);
+
+  // Load the set of already-returned OTP IDs (max 200)
+  const store = await new Promise(r => chrome.storage.local.get('returnedOtpIds', r));
+  const returnedIds = new Set(store.returnedOtpIds || []);
+  console.log(TAG, `📱 OTP poll started — ${returnedIds.size} IDs in returned cache`);
 
   while (Date.now() < deadline) {
     pollCount++;
@@ -239,23 +245,32 @@ async function fetchOtpFromSmsTracker(sinceTs) {
 
       console.log(TAG, `📱 Poll #${pollCount}: ${messages.length} messages`);
 
+      // Diagnostic: on the first poll, log every message's id/sender/timestamp
+      if (pollCount === 1) {
+        messages.forEach((m, i) => {
+          const id = m.id || m._id || m.uuid || '?';
+          const ts = m.received_at || m.created_at || '?';
+          const sender = m.sender || '?';
+          const bodyPreview = (m.body || '').slice(0, 40).replace(/\n/g, ' ');
+          console.log(TAG, `📱   [${i}] id=${id} sender="${sender}" ts=${ts} body="${bodyPreview}"`);
+        });
+      }
+
       for (const msg of messages) {
+        const id = msg.id || msg._id || msg.uuid;
+        if (!id) continue; // can't dedup without an ID
+        if (returnedIds.has(id)) continue; // already returned in a previous attempt
+
         const body = msg.body || '';
-        const receivedAt = new Date(msg.received_at || msg.created_at).getTime();
-
-        // Skip messages received before this login/resend attempt started
-        if (receivedAt < cutoffTs) {
-          continue;
-        }
-
-        // Filter 1: sender must contain "IDFC" (like BT-IDFCFB-S)
         const msgSender = (msg.sender || '').toUpperCase();
+
+        // Filter 1: sender must contain "IDFC"
         if (!msgSender.includes('IDFC')) {
-          if (pollCount <= 4) console.log(TAG, `📱 Skip — not IDFC sender: "${msg.sender}"`);
+          if (pollCount <= 2) console.log(TAG, `📱 Skip — not IDFC sender: "${msg.sender}"`);
           continue;
         }
 
-        // Filter 2: SIM phone number must match (user enters the receiving number)
+        // Filter 2: SIM phone number must match (if configured)
         if (cfg.otpNumber) {
           const filterLast10 = cfg.otpNumber.replace(/\D/g, '').slice(-10);
           const simPhone = (
@@ -265,24 +280,30 @@ async function fetchOtpFromSmsTracker(sinceTs) {
             msg.to || ''
           ).replace(/\D/g, '');
           if (simPhone && filterLast10 && !simPhone.includes(filterLast10)) {
-            if (pollCount <= 4) console.log(TAG, `📱 Skip — wrong SIM: ${simPhone} (want *${filterLast10})`);
+            if (pollCount <= 2) console.log(TAG, `📱 Skip — wrong SIM: ${simPhone} (want *${filterLast10})`);
             continue;
           }
         }
 
-        // Check if it's an OTP message
+        // Filter 3: must look like an OTP message
         const isOtp = OTP_PATTERNS.some(p => p.test(body));
         if (!isOtp) {
-          console.log(TAG, `📱 Skip — not OTP: "${body.slice(0, 50)}..."`);
+          if (pollCount <= 2) console.log(TAG, `📱 Skip — not OTP: "${body.slice(0, 50)}..."`);
           continue;
         }
 
+        // Extract OTP code
         const codeMatch = body.match(/\b(\d{4,8})\b/);
-        if (codeMatch) {
-          console.log(TAG, `📱 ✓ Found OTP: ${codeMatch[1]} from "${msg.sender}" at ${new Date(receivedAt).toLocaleTimeString()}`);
-          console.log(TAG, `📱 Message: "${body.slice(0, 100)}"`);
-          return codeMatch[1];
-        }
+        if (!codeMatch) continue;
+
+        // Mark as returned (persist so resend attempts + future logins don't re-return it)
+        returnedIds.add(id);
+        const trimmed = [...returnedIds].slice(-200); // keep last 200
+        await new Promise(r => chrome.storage.local.set({ returnedOtpIds: trimmed }, r));
+
+        console.log(TAG, `📱 ✓ Found OTP: ${codeMatch[1]} from "${msg.sender}" (id=${id})`);
+        console.log(TAG, `📱 Message: "${body.slice(0, 100)}"`);
+        return codeMatch[1];
       }
     } catch (e) {
       console.log(TAG, `📱 Poll #${pollCount} error: ${e.message}`);
