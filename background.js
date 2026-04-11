@@ -52,7 +52,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.action === 'solveCaptcha') {
-    console.log(TAG, '🔐 Captcha solve requested — calling Groq...');
+    console.log(TAG, '🔐 Captcha solve requested — trying Groq → Gemini...');
     const t0 = Date.now();
     solveCaptchaAI(msg.imageData)
       .then(t => {
@@ -121,99 +121,104 @@ async function callAPI(endpoint, payload) {
   return { ok: res.ok, status: res.status, data, url, ts: new Date().toISOString() };
 }
 
-// ── CAPTCHA solver using Groq (Llama 4 Scout — only vision model on Groq) ────
-// Get free API key at: https://console.groq.com/keys
-// Set it in the extension popup as "Groq API Key"
+// ── CAPTCHA solver: Groq primary (raw image, fast) → Gemini fallback ──
+// Groq: free at console.groq.com — Llama 4 Scout vision model
+// Gemini: free at aistudio.google.com/apikey — Gemini 2.5 Flash
 //
 // Strategy:
-// - Upscale the small captcha (~2KB) 3x via OffscreenCanvas — OCR accuracy scales with pixel count
-// - Sample Scout up to 3 times with temperature 0.2 (retries can diverge from same wrong answer)
+// - Try Groq first (faster, no preprocessing needed on raw images)
+// - 3x sampling with majority vote on each provider
+// - If Groq fails or has no key, fall back to Gemini
 // - Only accept samples that return exactly 8 alnum chars
-// - Majority vote: 2+ samples agreeing → return that answer immediately
-// - Otherwise return first valid 8-char sample
-const CAPTCHA_MODEL = 'meta-llama/llama-4-scout-17b-16e-instruct';
+
 const CAPTCHA_PROMPT = 'This is an 8-character alphanumeric CAPTCHA from an IDFC bank login page. It contains ONLY lowercase letters (a-z) and digits (0-9). Read the characters from left to right. Return ONLY the 8 characters. No spaces, no quotes, no explanation, no prefixes or suffixes. The output must be EXACTLY 8 characters — not 7, not 9. If unsure about a character, use your best guess. Common confusions to avoid: 9 vs g, 1 vs l vs i, 0 vs o, 5 vs s.';
 const CAPTCHA_MAX_SAMPLES = 3;
-const CAPTCHA_UPSCALE = 3; // 3x = 9x pixels
+
+// Provider configs
+const GROQ_MODEL = 'meta-llama/llama-4-scout-17b-16e-instruct';
+const GEMINI_MODEL = 'gemini-2.5-flash';
 
 async function solveCaptchaAI(imageData) {
-  const key = await getKey('groqKey');
-  if (!key) {
-    console.error(TAG, '🔐 No Groq API key set — get one free at console.groq.com/keys');
+  const groqKey = await getKey('groqKey');
+  const geminiKey = await getKey('geminiKey');
+
+  if (!groqKey && !geminiKey) {
+    console.error(TAG, '🔐 No API keys set — add Groq or Gemini key in settings');
     throw new Error('NO_KEY');
   }
 
-  const origBase64 = imageData.replace(/^data:image\/\w+;base64,/, '');
-  console.log(TAG, `🔐 Original captcha: ${Math.round(origBase64.length * 0.75 / 1024)}KB`);
+  const base64Data = imageData.replace(/^data:image\/\w+;base64,/, '');
+  console.log(TAG, `🔐 Captcha: ${Math.round(base64Data.length * 0.75 / 1024)}KB`);
 
-  // Upscale the captcha for better OCR accuracy
-  let base64Data;
-  try {
-    base64Data = await upscaleImage(imageData, CAPTCHA_UPSCALE);
-    console.log(TAG, `🔐 Upscaled ${CAPTCHA_UPSCALE}x → ${Math.round(base64Data.length * 0.75 / 1024)}KB`);
-  } catch (e) {
-    console.warn(TAG, `🔐 Upscale failed (${e.message}) — using original image`);
-    base64Data = origBase64;
+  // Try Groq first (raw image — no preprocessing)
+  if (groqKey) {
+    console.log(TAG, '🔐 Trying Groq (Llama 4 Scout)...');
+    try {
+      const result = await sampleWithMajorityVote(
+        () => callGroqVision(base64Data, groqKey), 'Groq'
+      );
+      if (result) return result;
+    } catch (e) {
+      console.warn(TAG, `🔐 Groq failed: ${e.message}`);
+    }
   }
 
+  // Fallback to Gemini
+  if (geminiKey) {
+    console.log(TAG, '🔐 Falling back to Gemini 2.5 Flash...');
+    try {
+      const result = await sampleWithMajorityVote(
+        () => callGeminiVision(base64Data, geminiKey), 'Gemini'
+      );
+      if (result) return result;
+    } catch (e) {
+      console.warn(TAG, `🔐 Gemini failed: ${e.message}`);
+    }
+  }
+
+  throw new Error('All captcha providers failed');
+}
+
+// Sample a provider up to CAPTCHA_MAX_SAMPLES times, return majority or first valid
+async function sampleWithMajorityVote(callFn, providerName) {
   const samples = [];
   let firstValid = null;
 
   for (let i = 1; i <= CAPTCHA_MAX_SAMPLES; i++) {
     try {
-      const raw = await callGroqVision(base64Data, key);
+      const raw = await callFn();
       const cleaned = raw.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
       const valid = cleaned.length === 8;
-      console.log(TAG, `🔐 Sample ${i}/${CAPTCHA_MAX_SAMPLES}: raw="${raw}" clean="${cleaned}" ${valid ? '✓' : `✗ (${cleaned.length} chars)`}`);
+      console.log(TAG, `🔐 [${providerName}] Sample ${i}/${CAPTCHA_MAX_SAMPLES}: raw="${raw}" clean="${cleaned}" ${valid ? '✓' : `✗ (${cleaned.length} chars)`}`);
 
       if (!valid) continue;
 
       samples.push(cleaned);
       if (!firstValid) firstValid = cleaned;
 
-      // Majority vote: if any answer now has 2+ occurrences, return it
+      // Majority vote: 2+ agreeing → return immediately
       const counts = {};
       for (const s of samples) counts[s] = (counts[s] || 0) + 1;
       const winner = Object.entries(counts).find(([, c]) => c >= 2);
       if (winner) {
-        console.log(TAG, `🔐 ✓ Majority vote (${winner[1]}/${samples.length}): "${winner[0]}"`);
+        console.log(TAG, `🔐 [${providerName}] ✓ Majority vote (${winner[1]}/${samples.length}): "${winner[0]}"`);
         return winner[0];
       }
     } catch (e) {
-      console.error(TAG, `🔐 Sample ${i} error: ${e.message}`);
+      console.error(TAG, `🔐 [${providerName}] Sample ${i} error: ${e.message}`);
     }
   }
 
   if (firstValid) {
-    console.log(TAG, `🔐 No majority — using first valid sample: "${firstValid}"`);
+    console.log(TAG, `🔐 [${providerName}] No majority — using first valid: "${firstValid}"`);
     return firstValid;
   }
 
-  console.error(TAG, `🔐 All ${CAPTCHA_MAX_SAMPLES} samples failed to return 8 chars`);
-  throw new Error('Captcha samples all invalid length');
+  console.warn(TAG, `🔐 [${providerName}] All ${CAPTCHA_MAX_SAMPLES} samples failed`);
+  return null;
 }
 
-// Upscale a base64 image NxN using OffscreenCanvas (works in MV3 service workers)
-async function upscaleImage(dataUrl, scale) {
-  const blob = await (await fetch(dataUrl)).blob();
-  const bitmap = await createImageBitmap(blob);
-  const w = bitmap.width * scale;
-  const h = bitmap.height * scale;
-  const canvas = new OffscreenCanvas(w, h);
-  const ctx = canvas.getContext('2d');
-  ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = 'high';
-  ctx.drawImage(bitmap, 0, 0, w, h);
-  bitmap.close();
-  const outBlob = await canvas.convertToBlob({ type: 'image/png' });
-  // Blob → base64
-  const buf = await outBlob.arrayBuffer();
-  const bytes = new Uint8Array(buf);
-  let binary = '';
-  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-  return btoa(binary);
-}
-
+// ── Groq vision API (OpenAI-compatible) ──
 async function callGroqVision(base64Data, key) {
   const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
     method: 'POST',
@@ -222,23 +227,57 @@ async function callGroqVision(base64Data, key) {
       'Authorization': `Bearer ${key}`
     },
     body: JSON.stringify({
-      model: CAPTCHA_MODEL,
-      messages: [{ role: 'user', content: [
-        { type: 'image_url', image_url: { url: `data:image/png;base64,${base64Data}` } },
-        { type: 'text', text: CAPTCHA_PROMPT }
-      ]}],
+      model: GROQ_MODEL,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'image_url', image_url: { url: `data:image/png;base64,${base64Data}` } },
+          { type: 'text', text: CAPTCHA_PROMPT }
+        ]
+      }],
+      temperature: 0.2,
       max_tokens: 20,
-      temperature: 0.2 // slight variance so retries can diverge
     })
   });
 
   if (!res.ok) {
     const err = await res.text().catch(() => '');
-    throw new Error(`Groq ${res.status}: ${err.slice(0, 100)}`);
+    throw new Error(`Groq ${res.status}: ${err.slice(0, 120)}`);
   }
 
   const d = await res.json();
   return (d.choices?.[0]?.message?.content || '').trim();
+}
+
+// ── Gemini vision API ──
+async function callGeminiVision(base64Data, key) {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${encodeURIComponent(key)}`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      contents: [{
+        parts: [
+          { inline_data: { mime_type: 'image/png', data: base64Data } },
+          { text: CAPTCHA_PROMPT }
+        ]
+      }],
+      generationConfig: {
+        temperature: 0.2,
+        maxOutputTokens: 20,
+        thinkingConfig: { thinkingBudget: 0 }
+      }
+    })
+  });
+
+  if (!res.ok) {
+    const err = await res.text().catch(() => '');
+    throw new Error(`Gemini ${res.status}: ${err.slice(0, 120)}`);
+  }
+
+  const d = await res.json();
+  const parts = d.candidates?.[0]?.content?.parts || [];
+  return parts.map(p => p.text || '').join('').trim();
 }
 
 function getKey(k) {

@@ -113,7 +113,7 @@
       }
 
       if (!solved) {
-        toast('⚠ Groq key missing — enter captcha manually');
+        toast('⚠ No API key — add Groq or Gemini key in settings');
         return;
       }
 
