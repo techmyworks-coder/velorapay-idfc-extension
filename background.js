@@ -3,7 +3,6 @@ const IDFC_URL = 'https://merchant.phi.idfcbank.com/upi-merchant/main/transactio
 const ALARM = 'vp-sync';
 const TAG = '[VeloraPay BG]';
 let otpInFlight = false;
-let otpRequestTs = 0; // timestamp when OTP was requested (to skip older messages)
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.alarms.create(ALARM, { periodInMinutes: 0.667 }); // 40s
@@ -75,10 +74,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return true;
     }
     otpInFlight = true;
-    otpRequestTs = Date.now(); // mark when login was clicked (for filtering old OTPs)
-    console.log(TAG, '📱 OTP fetch requested — polling SMS Tracker...');
+    // Content script passes sinceTs — only OTPs received AFTER this time are valid.
+    // Fallback: if not provided, use "now" (strictest).
+    const sinceTs = msg.sinceTs || Date.now();
+    console.log(TAG, `📱 OTP fetch requested — polling SMS Tracker (accepting OTPs newer than ${new Date(sinceTs).toLocaleTimeString()})`);
     const t0 = Date.now();
-    fetchOtpFromSmsTracker()
+    fetchOtpFromSmsTracker(sinceTs)
       .then(otp => {
         console.log(TAG, `📱 OTP received: "${otp}" (${Date.now() - t0}ms)`);
         sendResponse({ otp });
@@ -176,7 +177,7 @@ const OTP_PATTERNS = [
   /\d{4,8}.{0,10}(expire|valid|expires)/i,
 ];
 
-async function fetchOtpFromSmsTracker() {
+async function fetchOtpFromSmsTracker(sinceTs) {
   const cfg = await new Promise(r => chrome.storage.local.get('smsTracker', d => r(d.smsTracker || {})));
   if (!cfg.url || !cfg.email || !cfg.password) {
     throw new Error('SMS Tracker not configured — go to Settings');
@@ -203,10 +204,9 @@ async function fetchOtpFromSmsTracker() {
   console.log(TAG, `📱 SMS Tracker authenticated, polling for OTP...`);
 
   // Step 2: Poll for OTP
-  // Strategy: take the NEWEST IDFC OTP from the last 2 minutes
-  // On first poll, if we find one, return it immediately (OTP may arrive before polling starts)
-  // If not found, keep polling until a new one appears or timeout
-  const cutoffTs = Date.now() - 120000; // 2 min lookback
+  // Strategy: only accept OTPs received AFTER sinceTs (the moment login/resend was clicked).
+  // This prevents returning stale OTPs from previous login attempts.
+  const cutoffTs = sinceTs;
   const deadline = Date.now() + 45000;
   let pollCount = 0;
   console.log(TAG, `📱 Looking for IDFC OTP newer than ${new Date(cutoffTs).toLocaleTimeString()}`);
@@ -234,7 +234,7 @@ async function fetchOtpFromSmsTracker() {
         const body = msg.body || '';
         const receivedAt = new Date(msg.received_at || msg.created_at).getTime();
 
-        // Skip messages older than 2 min
+        // Skip messages received before this login/resend attempt started
         if (receivedAt < cutoffTs) {
           continue;
         }

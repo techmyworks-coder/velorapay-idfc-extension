@@ -6,8 +6,11 @@
   let sentIds = new Set();
   let stats = { synced: 0, amt: 0, cycles: 0, errors: 0 };
   let heartbeat = null;
+  let reloadDeadline = 0;    // epoch ms when next scheduled reload fires (for countdown)
   const SYNC_INTERVAL = 40;  // seconds — page reload + sync cycle
   const PER_PAGE      = 10;  // items per page on IDFC portal
+  const MAX_LOGIN_CYCLES = 5; // max consecutive login failures before giving up
+  const LOGIN_COOLDOWN_MS = 5 * 60 * 1000; // 5 min cooldown after max failures
 
   // ── Boot ───────────────────────────────────────────────────────────────────
   async function boot() {
@@ -18,10 +21,18 @@
       await sleep(1800);
       await autoLogin();
     } else if (url.includes('/transactions')) {
+      // Reached transactions successfully → reset login failure counter
+      chrome.storage.local.remove(['loginFailCount', 'loginCooldownUntil']);
       await sleep(2500);
       showOverlay();
       startHeartbeat();
       await runCycle(); // immediate first run — reload triggers next ones
+    } else {
+      // Logged out or session expired — redirected to unknown page
+      log('warn', `Landed on unexpected page: ${url} — likely logged out, redirecting to login...`);
+      toast('⚠ Session expired — redirecting to login...');
+      await sleep(2000);
+      location.href = 'https://merchant.phi.idfcbank.com/upi-merchant/login';
     }
   }
 
@@ -33,64 +44,59 @@
     }));
   }
 
-  // ── Auto-login with retry (max 3 attempts) ─────────────────────────────────
-  const MAX_LOGIN_ATTEMPTS = 3;
+  // ── Auto-login: login+captcha once, then up to 3 OTP attempts (with resend) ─
+  const MAX_OTP_ATTEMPTS = 3;
 
   async function autoLogin() {
     const cfg = await getConfig();
     if (!cfg) return log('warn', 'No account selected — open extension popup');
 
-    for (let attempt = 1; attempt <= MAX_LOGIN_ATTEMPTS; attempt++) {
-      log('info', `Login attempt ${attempt}/${MAX_LOGIN_ATTEMPTS}: ${cfg.account_name}`);
+    // Loop guard: check cooldown + failure count
+    const guard = await new Promise(r => chrome.storage.local.get(['loginFailCount', 'loginCooldownUntil'], r));
+    const failCount = guard.loginFailCount || 0;
+    const cooldownUntil = guard.loginCooldownUntil || 0;
 
-      const result = await tryLoginOnce(cfg);
-
-      if (result === 'success') {
-        log('ok', `Login+OTP succeeded on attempt ${attempt}`);
-        return;
-      }
-      if (result === 'no_fields') {
-        log('warn', 'Login fields not found — aborting');
-        return; // not retryable
-      }
-      if (result === 'no_captcha_key') {
-        toast('⚠ Enter captcha manually then click Continue');
-        return; // manual intervention needed
-      }
-
-      // Failed — retry if attempts remain
-      if (attempt < MAX_LOGIN_ATTEMPTS) {
-        log('warn', `Attempt ${attempt} failed (${result}) — retrying in 5s...`);
-        toast(`⚠ Attempt ${attempt} failed — retrying...`);
-        await sleep(5000);
-        // Refresh captcha before retry (click refresh button if exists)
-        const refreshBtn = document.querySelector('.refresh-button, .refresh-button-invalid, [mattooltip*="Refresh"], button[aria-label*="refresh"]');
-        if (refreshBtn) { refreshBtn.click(); await sleep(1500); }
-      } else {
-        log('error', `All ${MAX_LOGIN_ATTEMPTS} login attempts failed — giving up`);
-        toast(`❌ Login failed after ${MAX_LOGIN_ATTEMPTS} attempts — try manually`);
-      }
+    if (Date.now() < cooldownUntil) {
+      const waitSec = Math.ceil((cooldownUntil - Date.now()) / 1000);
+      log('warn', `Login cooldown active — ${waitSec}s remaining. Skipping auto-login.`);
+      toast(`⏸ Login paused — retry in ${Math.ceil(waitSec / 60)}min (manual intervention needed)`);
+      return;
     }
-  }
 
-  // Single login+OTP attempt — returns 'success' | 'no_fields' | 'no_captcha_key' | 'captcha_fail' | 'otp_fail' | 'login_error'
-  async function tryLoginOnce(cfg) {
-    // Fill credentials
+    if (failCount >= MAX_LOGIN_CYCLES) {
+      log('error', `Hit ${MAX_LOGIN_CYCLES} consecutive login failures — entering cooldown`);
+      chrome.storage.local.set({
+        loginCooldownUntil: Date.now() + LOGIN_COOLDOWN_MS,
+        loginFailCount: 0,
+      });
+      toast(`❌ Too many login failures — paused for 5 min`);
+      return;
+    }
+
+    log('info', `Logging in: ${cfg.account_name} (attempt ${failCount + 1}/${MAX_LOGIN_CYCLES})`);
+
+    // Step 1: Fill credentials (once)
     try {
       const u = await waitFor('input[formcontrolname="newusername"]', 5000);
       const p = await waitFor('input[formcontrolname="newpassword"]', 5000);
       ngSet(u, cfg.login_username);
       ngSet(p, cfg.login_password);
       log('ok', 'Credentials filled');
-    } catch { return 'no_fields'; }
+    } catch {
+      log('warn', 'Login fields not found — aborting (not retryable)');
+      return; // don't increment failCount — this is a structural issue
+    }
 
-    // Solve captcha
+    // Step 2: Solve captcha (once)
     try {
       const img = await waitFor('img.captcha-image', 3000);
       const solved = await new Promise(r =>
         chrome.runtime.sendMessage({ action: 'solveCaptcha', imageData: img.src }, res => r(res?.text || null))
       );
-      if (!solved) return 'no_captcha_key';
+      if (!solved) {
+        toast('⚠ Enter captcha manually then click Continue');
+        return;
+      }
 
       const ci = await waitFor('input[formcontrolname="captcha"]', 2000);
       ngSet(ci, solved);
@@ -98,57 +104,87 @@
       await sleep(400);
       document.querySelector('button.auth-button')?.click();
       log('info', 'Login clicked — waiting for OTP page...');
-    } catch { return 'captcha_fail'; }
+    } catch {
+      log('error', 'Captcha solve failed');
+      return;
+    }
 
-    // Check if login failed (error message on same page)
+    // Step 3: Check if login succeeded (captcha correct?)
     await sleep(3000);
     const errorEl = document.querySelector('.alert-danger, .error-message, .invalid-feedback[style*="block"], .alert-wrapper .alert');
     if (errorEl && errorEl.textContent.trim()) {
       log('warn', `Login error: "${errorEl.textContent.trim().slice(0, 80)}"`);
-      return 'login_error';
+      toast('⚠ Login failed — reloading to retry...');
+      await bumpFailAndReload();
+      return;
     }
 
-    // Still on login page? (captcha might have been wrong)
     if (document.querySelector('input[formcontrolname="captcha"]')) {
-      log('warn', 'Still on login page — captcha may be wrong');
-      return 'captcha_fail';
+      log('warn', 'Still on login page — captcha may be wrong, reloading...');
+      await bumpFailAndReload();
+      return;
     }
 
-    // Try OTP
+    // Step 4: OTP — up to 3 attempts with resend
     const otpResult = await autoOtp();
-    return otpResult;
+    if (otpResult === 'success') {
+      log('ok', 'Login+OTP succeeded');
+      // boot() on /transactions will clear the fail counter
+    } else {
+      log('error', `OTP failed after ${MAX_OTP_ATTEMPTS} attempts — reloading to start over...`);
+      toast('❌ OTP failed — reloading to retry login...');
+      await bumpFailAndReload();
+    }
   }
 
-  // ── Auto-OTP fill (max 2 OTP attempts) ─────────────────────────────────────
-  const MAX_OTP_ATTEMPTS = 2;
+  // Increment login fail counter, then reload login page to retry fresh
+  async function bumpFailAndReload() {
+    const d = await new Promise(r => chrome.storage.local.get('loginFailCount', r));
+    const next = (d.loginFailCount || 0) + 1;
+    await new Promise(r => chrome.storage.local.set({ loginFailCount: next }, r));
+    log('info', `Login fail count: ${next}/${MAX_LOGIN_CYCLES}`);
+    await sleep(3000);
+    location.reload();
+  }
 
+  // ── Auto-OTP: 3 attempts — attempt 1 waits for initial OTP, attempts 2+3 click resend ─
   async function autoOtp() {
-    // Check if OTP page appeared
     let otpInput;
     try {
       otpInput = await waitFor('input[formcontrolname="otp"], input[formcontrolname="otpValue"], .otp-wrapper input[type="text"], .otp-wrapper input[type="number"], .otp-wrapper input[type="password"]', 10000);
     } catch {
       log('info', 'No OTP page detected — may have logged in directly');
-      return 'success'; // no OTP needed = success
+      return 'success';
     }
 
     log('ok', 'OTP page detected');
 
+    // sinceTs = when OTP was (re)requested — only SMS received after this are valid
+    // For attempt 1: OTP was sent when login button was clicked (a few seconds ago).
+    //   Use a small backdated window to catch OTPs that arrived during page transition.
+    let sinceTs = Date.now() - 15000;
+
     for (let attempt = 1; attempt <= MAX_OTP_ATTEMPTS; attempt++) {
       log('info', `OTP attempt ${attempt}/${MAX_OTP_ATTEMPTS} — requesting from SMS Tracker...`);
-      toast(`🔐 Fetching OTP (attempt ${attempt})...`);
+      toast(`🔐 Fetching OTP (attempt ${attempt}/${MAX_OTP_ATTEMPTS})...`);
 
-      // Wait between OTP attempts to avoid rapid-fire requests
+      // Attempts 2+3: click resend OTP before polling, reset sinceTs to "now"
       if (attempt > 1) {
-        log('info', 'Waiting 10s before next OTP request...');
+        log('info', 'Waiting 10s before resending OTP...');
         await sleep(10000);
-        // Re-request OTP if there's a resend button
         const resendBtn = document.querySelector('button[class*="resend"], a[class*="resend"], .resend-otp, [mattooltip*="Resend"]');
-        if (resendBtn) { resendBtn.click(); log('info', 'Clicked resend OTP'); await sleep(3000); }
+        if (resendBtn) {
+          resendBtn.click();
+          log('ok', `Clicked Resend OTP (attempt ${attempt})`);
+          sinceTs = Date.now(); // only accept OTPs that arrive AFTER the resend click
+          await sleep(3000);
+        } else {
+          log('warn', 'Resend OTP button not found');
+        }
       }
 
       const otpRes = await new Promise(r =>
-        chrome.runtime.sendMessage({ action: 'fetchOtp' }, res => r(res || {}))
+        chrome.runtime.sendMessage({ action: 'fetchOtp', sinceTs }, res => r(res || {}))
       );
 
       if (otpRes.error === 'OTP_IN_FLIGHT') {
@@ -160,7 +196,7 @@
       if (!otpRes.otp) {
         log('warn', `OTP attempt ${attempt} — not received`);
         if (attempt === MAX_OTP_ATTEMPTS) {
-          toast('⚠ OTP not found — enter manually');
+          toast('⚠ OTP not found after 3 attempts — enter manually');
           return 'otp_fail';
         }
         continue;
@@ -190,7 +226,7 @@
         toast('✅ OTP filled — click Submit manually');
       }
 
-      // Check if OTP was accepted (wait a bit then check if still on OTP page)
+      // Check if OTP was accepted
       await sleep(3000);
       const stillOnOtp = document.querySelector('.otp-wrapper, app-otp-verification');
       const otpError = document.querySelector('.otp-wrapper .alert-danger, .otp-wrapper .error-message, .otp-wrapper .invalid-feedback');
@@ -216,6 +252,16 @@
     stats.cycles++;
     log('info', `▶ Cycle #${stats.cycles} started`);
     updateOverlay('syncing');
+
+    // Session-expired detection: if login form appears or session-expired banner shows, redirect to login
+    if (isSessionExpired()) {
+      log('warn', 'Session expired detected on /transactions — redirecting to login');
+      toast('⚠ Session expired — redirecting to login...');
+      running = false;
+      await sleep(1500);
+      location.href = 'https://merchant.phi.idfcbank.com/upi-merchant/login';
+      return;
+    }
 
     try {
       const cfg = await getConfig();
@@ -254,7 +300,7 @@
         pushAPILog(result, fresh);
 
         if (result.ok) {
-          fresh.forEach(t => sentIds.add(t.txnId));
+          fresh.forEach(t => addSentId(t.txnId));
           saveState();
           const amt = fresh.reduce((s, t) => s + parseAmt(t.amount), 0);
           stats.synced += fresh.length;
@@ -290,10 +336,24 @@
   // This prevents IDFC session timeout AND ensures we always get fresh data
   function scheduleReload() {
     log('info', `⏱ Page reload scheduled in ${SYNC_INTERVAL}s`);
+    reloadDeadline = Date.now() + SYNC_INTERVAL * 1000;
     setTimeout(() => {
       log('info', '🔄 Force-reloading page to keep session alive...');
       location.reload();
     }, SYNC_INTERVAL * 1000);
+  }
+
+  // ── Session expired detection ────────────────────────────────────────────
+  // Angular may not change URL on session expiry — check DOM for login form or banners
+  function isSessionExpired() {
+    // Login form visible on /transactions = session expired
+    if (document.querySelector('input[formcontrolname="newusername"]')) return true;
+    if (document.querySelector('input[formcontrolname="captcha"]')) return true;
+    // Session expired banners/dialogs
+    const bodyText = document.body?.textContent || '';
+    if (/session.{0,10}(expired|timeout|ended)/i.test(bodyText)) return true;
+    if (/please.{0,10}login.{0,10}again/i.test(bodyText)) return true;
+    return false;
   }
 
   // ── Set items per page ────────────────────────────────────────────────────
@@ -479,19 +539,37 @@
     pushStatus(state, text);
   }
 
-  // ── Heartbeat every 5s — updates overlay timer ────────────────────────────
+  // ── Heartbeat every 1s — real countdown to next reload ───────────────────
   function startHeartbeat() {
     if (heartbeat) return;
-    let reloadIn = SYNC_INTERVAL; // counts down after runCycle sets scheduleReload
     heartbeat = setInterval(() => {
       const timerEl = document.querySelector('#vp-ov-timer');
-      if (timerEl) timerEl.textContent = running ? '⟳ running' : `↺ ${SYNC_INTERVAL}s`;
+      if (timerEl) {
+        if (running) {
+          timerEl.textContent = '⟳ running';
+        } else if (reloadDeadline > 0) {
+          const secs = Math.max(0, Math.ceil((reloadDeadline - Date.now()) / 1000));
+          timerEl.textContent = `↺ ${secs}s`;
+        } else {
+          timerEl.textContent = '--s';
+        }
+      }
       chrome.storage.local.set({ heartbeat: { ts: Date.now(), cycles: stats.cycles } });
-    }, 5000);
+    }, 1000);
   }
 
   // ── State persistence ──────────────────────────────────────────────────────
-  function saveState()  { chrome.storage.local.set({ sentIds: [...sentIds].slice(-3000) }); }
+  const MAX_SENT_IDS = 3000;
+  function addSentId(id) {
+    if (sentIds.has(id)) return;
+    sentIds.add(id);
+    // Evict oldest entries (Set preserves insertion order)
+    while (sentIds.size > MAX_SENT_IDS) {
+      const oldest = sentIds.values().next().value;
+      sentIds.delete(oldest);
+    }
+  }
+  function saveState()  { chrome.storage.local.set({ sentIds: [...sentIds] }); }
   function saveStats()  { chrome.storage.local.set({ syncStats: stats }); }
   function pushStatus(type, msg) { chrome.storage.local.set({ syncStatus: { type, msg, ts: Date.now() } }); }
 
