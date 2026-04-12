@@ -101,11 +101,14 @@
 
       // Solve captcha
       let solved;
+      let solveError;
       try {
         const img = await waitFor('img.captcha-image', 3000);
-        solved = await new Promise(r =>
-          chrome.runtime.sendMessage({ action: 'solveCaptcha', imageData: img.src }, res => r(res?.text || null))
+        const res = await new Promise(r =>
+          chrome.runtime.sendMessage({ action: 'solveCaptcha', imageData: img.src }, r)
         );
+        solved = res?.text || null;
+        solveError = res?.error || null;
       } catch {
         log('warn', 'Captcha image not found');
         await refreshCaptcha();
@@ -113,8 +116,14 @@
       }
 
       if (!solved) {
-        toast('⚠ No API key — add Groq or Gemini key in settings');
-        return;
+        if (solveError === 'NO_KEY') {
+          toast('⚠ No API key — add Groq or Gemini key in settings');
+        } else {
+          log('warn', `Captcha solve failed: ${solveError || 'unknown'}`);
+          toast(`⚠ Captcha solver error — check service worker logs`);
+        }
+        await refreshCaptcha();
+        continue;
       }
 
       // Fill + submit
