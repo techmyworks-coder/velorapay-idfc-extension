@@ -651,6 +651,8 @@
 
   function log(level, msg) {
     console.log(`[VeloraPay][${level}] ${msg}`);
+    // Forward to service worker so logs appear in both page console AND service worker console
+    chrome.runtime.sendMessage({ action: 'log', level, msg }).catch(() => {});
     chrome.storage.local.get('syncLog', d => {
       const logs = d.syncLog || [];
       logs.unshift({ ts: new Date().toLocaleTimeString(), level, msg });

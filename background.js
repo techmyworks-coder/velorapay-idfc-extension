@@ -13,13 +13,25 @@ chrome.alarms.onAlarm.addListener((a) => {
   if (a.name !== ALARM) return;
   console.log(TAG, '⏰ Alarm tick — pinging IDFC tabs');
   chrome.tabs.query({ url: 'https://merchant.phi.idfcbank.com/*' }, tabs => {
-    console.log(TAG, `Found ${tabs.length} IDFC tab(s)`);
-    tabs.forEach(t => chrome.tabs.sendMessage(t.id, { action: 'alarmTick' }).catch(() => {}));
+    console.log(TAG, `⏰ Found ${tabs.length} IDFC tab(s)${tabs.length ? ': ' + tabs.map(t => `[id:${t.id} url:${t.url.split('/').pop()}]`).join(' ') : ''}`);
+    tabs.forEach(t => {
+      chrome.tabs.sendMessage(t.id, { action: 'alarmTick' })
+        .then(() => console.log(TAG, `⏰ Tab ${t.id} responded OK`))
+        .catch(e => console.log(TAG, `⏰ Tab ${t.id} unreachable: ${e.message}`));
+    });
   });
 });
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   const from = sender.tab ? `tab:${sender.tab.id}` : 'popup';
+
+  // Forward content script logs to service worker console
+  if (msg.action === 'log') {
+    const icon = { ok: '✅', info: 'ℹ️', warn: '⚠️', error: '❌' }[msg.level] || '📋';
+    console.log(TAG, `${icon} [Content][${msg.level}] ${msg.msg}`);
+    return; // no response needed
+  }
+
   console.log(TAG, `📩 Message: "${msg.action}" from ${from}`);
 
   if (msg.action === 'openIDFC') {
@@ -38,10 +50,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.action === 'postAPI') {
-    console.log(TAG, `📤 POST /${msg.endpoint} — ${msg.payload?.transactions?.length || 0} txns`);
+    const txnCount = msg.payload?.transactions?.length || 0;
+    const totalAmt = msg.payload?.transactions?.reduce((s, t) => s + (t.amount || 0), 0) || 0;
+    console.log(TAG, `📤 POST /${msg.endpoint} — ${txnCount} txns, ₹${totalAmt.toFixed(2)}`);
+    if (txnCount > 0) {
+      msg.payload.transactions.forEach((t, i) => {
+        console.log(TAG, `📤   [${i}] uid=${t.uid} txn_id=${t.transaction_id} ₹${t.amount} ${t.payer_vpa || ''}`);
+      });
+    }
     callAPI(msg.endpoint, msg.payload)
       .then(r => {
-        console.log(TAG, `📥 API response: ${r.status} ${r.ok ? '✓' : '✗'}`, r.data);
+        console.log(TAG, `📥 API response: ${r.status} ${r.ok ? '✓' : '✗'}`, JSON.stringify(r.data).slice(0, 300));
         sendResponse(r);
       })
       .catch(e => {
@@ -69,26 +88,29 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.action === 'fetchOtp') {
     // Guard: reject if an OTP request is already in-flight
     if (otpInFlight) {
-      console.log(TAG, '📱 OTP request already in-flight — rejecting duplicate');
+      console.warn(TAG, '📱 OTP request already in-flight — rejecting duplicate');
       sendResponse({ error: 'OTP_IN_FLIGHT' });
       return true;
     }
     otpInFlight = true;
-    // Content script passes sinceTs — only OTPs received AFTER this time are valid.
-    // Fallback: if not provided, use "now" (strictest).
     const sinceTs = msg.sinceTs || Date.now();
-    console.log(TAG, `📱 OTP fetch requested — polling SMS Tracker (accepting OTPs newer than ${new Date(sinceTs).toLocaleTimeString()})`);
+    console.log(TAG, `📱 ── OTP FETCH START ──`);
+    console.log(TAG, `📱 sinceTs: ${new Date(sinceTs).toLocaleTimeString()} (${sinceTs})`);
+    console.log(TAG, `📱 Deadline: 45s from now`);
     const t0 = Date.now();
     fetchOtpFromSmsTracker(sinceTs)
       .then(otp => {
-        console.log(TAG, `📱 OTP received: "${otp}" (${Date.now() - t0}ms)`);
+        console.log(TAG, `📱 ── OTP FETCH SUCCESS ── "${otp}" (${Date.now() - t0}ms)`);
         sendResponse({ otp });
       })
       .catch(e => {
-        console.error(TAG, `❌ OTP fetch failed: ${e.message} (${Date.now() - t0}ms)`);
+        console.error(TAG, `📱 ── OTP FETCH FAILED ── ${e.message} (${Date.now() - t0}ms)`);
         sendResponse({ error: e.message });
       })
-      .finally(() => { otpInFlight = false; });
+      .finally(() => {
+        otpInFlight = false;
+        console.log(TAG, `📱 otpInFlight reset to false`);
+      });
     return true;
   }
 
@@ -299,7 +321,8 @@ async function fetchOtpFromSmsTracker(sinceTs) {
     throw new Error('SMS Tracker not configured — go to Settings');
   }
 
-  console.log(TAG, `📱 Logging into SMS Tracker: ${cfg.url}`);
+  console.log(TAG, `📱 SMS Tracker config: url=${cfg.url} email=${cfg.email} otpNumber=${cfg.otpNumber || 'any'}`);
+  console.log(TAG, `📱 Logging into SMS Tracker...`);
 
   // Step 1: Login to get auth token
   const loginRes = await fetch(`${cfg.url}/api/auth/login`, {
@@ -307,7 +330,11 @@ async function fetchOtpFromSmsTracker(sinceTs) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email: cfg.email, password: cfg.password })
   });
-  if (!loginRes.ok) throw new Error(`SMS Tracker login failed: ${loginRes.status}`);
+  if (!loginRes.ok) {
+    const errBody = await loginRes.text().catch(() => '');
+    console.error(TAG, `📱 SMS Tracker login failed: ${loginRes.status} — ${errBody.slice(0, 150)}`);
+    throw new Error(`SMS Tracker login failed: ${loginRes.status}`);
+  }
 
   // Extract token from set-cookie or response body
   const setCookie = loginRes.headers.get('set-cookie') || '';
@@ -317,7 +344,7 @@ async function fetchOtpFromSmsTracker(sinceTs) {
     const body = await loginRes.json().catch(() => ({}));
     authToken = body.token || '';
   }
-  console.log(TAG, `📱 SMS Tracker authenticated, polling for OTP...`);
+  console.log(TAG, `📱 SMS Tracker authenticated (token: ${authToken ? authToken.slice(0, 8) + '...' : 'none'}), polling for OTP...`);
 
   // Step 2: Poll for OTP
   // Strategy: track which OTP message IDs we've already returned (persisted across sessions).
@@ -350,16 +377,18 @@ async function fetchOtpFromSmsTracker(sinceTs) {
       const data = await res.json();
       const messages = data.data || data.messages || (Array.isArray(data) ? data : []);
 
-      console.log(TAG, `📱 Poll #${pollCount}: ${messages.length} messages`);
+      const remaining = Math.ceil((deadline - Date.now()) / 1000);
+      console.log(TAG, `📱 Poll #${pollCount}: ${messages.length} messages (${remaining}s remaining)`);
 
-      // Diagnostic: on the first poll, log every message's id/sender/timestamp
-      if (pollCount === 1) {
+      // Log every message on first 3 polls for visibility
+      if (pollCount <= 3) {
         messages.forEach((m, i) => {
           const id = m.id || m._id || m.uuid || '?';
           const ts = m.received_at || m.created_at || '?';
           const sender = m.sender || '?';
-          const bodyPreview = (m.body || '').slice(0, 40).replace(/\n/g, ' ');
-          console.log(TAG, `📱   [${i}] id=${id} sender="${sender}" ts=${ts} body="${bodyPreview}"`);
+          const bodyPreview = (m.body || '').slice(0, 60).replace(/\n/g, ' ');
+          const alreadyReturned = returnedIds.has(id) ? ' [ALREADY RETURNED]' : '';
+          console.log(TAG, `📱   [${i}] id=${id} sender="${sender}" ts=${ts}${alreadyReturned} body="${bodyPreview}"`);
         });
       }
 
@@ -373,7 +402,7 @@ async function fetchOtpFromSmsTracker(sinceTs) {
 
         // Filter 1: sender must contain "IDFC"
         if (!msgSender.includes('IDFC')) {
-          if (pollCount <= 2) console.log(TAG, `📱 Skip — not IDFC sender: "${msg.sender}"`);
+          if (pollCount <= 3) console.log(TAG, `📱   Skip id=${id} — not IDFC sender: "${msg.sender}"`);
           continue;
         }
 
@@ -387,7 +416,7 @@ async function fetchOtpFromSmsTracker(sinceTs) {
             msg.to || ''
           ).replace(/\D/g, '');
           if (simPhone && filterLast10 && !simPhone.includes(filterLast10)) {
-            if (pollCount <= 2) console.log(TAG, `📱 Skip — wrong SIM: ${simPhone} (want *${filterLast10})`);
+            console.log(TAG, `📱   Skip id=${id} — wrong SIM: ${simPhone} (want *${filterLast10})`);
             continue;
           }
         }
@@ -395,7 +424,7 @@ async function fetchOtpFromSmsTracker(sinceTs) {
         // Filter 3: must look like an OTP message
         const isOtp = OTP_PATTERNS.some(p => p.test(body));
         if (!isOtp) {
-          if (pollCount <= 2) console.log(TAG, `📱 Skip — not OTP: "${body.slice(0, 50)}..."`);
+          if (pollCount <= 3) console.log(TAG, `📱   Skip id=${id} — not OTP pattern: "${body.slice(0, 60)}..."`);
           continue;
         }
 
