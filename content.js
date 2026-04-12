@@ -167,8 +167,11 @@
     // Step 3: OTP — up to 3 attempts with resend
     const otpResult = await autoOtp();
     if (otpResult === 'success') {
-      log('ok', 'Login+OTP succeeded');
-      // boot() on /transactions will clear the fail counter
+      log('ok', 'Login+OTP succeeded — navigating to transactions page...');
+      await sleep(2000);
+      // Force hard navigation so content script re-runs with boot() on /transactions
+      location.href = 'https://merchant.phi.idfcbank.com/upi-merchant/main/transactions';
+      return;
     } else {
       log('error', `OTP failed after ${MAX_OTP_ATTEMPTS} attempts — reloading to start over...`);
       toast('❌ OTP failed — reloading to retry login...');
