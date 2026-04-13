@@ -117,7 +117,7 @@
 
       if (!solved) {
         if (solveError === 'NO_KEY') {
-          toast('⚠ No API key — add Groq or Gemini key in settings');
+          toast('⚠ OpenAI API key error — check billing');
         } else {
           log('warn', `Captcha solve failed: ${solveError || 'unknown'}`);
           toast(`⚠ Captcha solver error — check service worker logs`);

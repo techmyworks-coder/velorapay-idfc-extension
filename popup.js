@@ -40,8 +40,6 @@ function setupButtons() {
   document.getElementById('btnReload').addEventListener('click', reloadTab);
   document.getElementById('btnClearLog').addEventListener('click', () => { chrome.storage.local.set({ syncLog: [] }); renderLogs(); });
   document.getElementById('btnClearApi').addEventListener('click', () => { chrome.storage.local.set({ apiLogs: [] }); renderApiLogs(); });
-  document.getElementById('btnSaveGroqKey').addEventListener('click', saveGroqKey);
-  document.getElementById('btnSaveKey').addEventListener('click', saveKey);
   document.getElementById('btnSaveSms').addEventListener('click', saveSms);
   document.getElementById('btnSaveInterval').addEventListener('click', saveInterval);
 
@@ -115,9 +113,7 @@ async function onSelect() {
 
 // ── Settings ──────────────────────────────────────────────────────────────────
 function loadSettings() {
-  chrome.storage.local.get(['groqKey','geminiKey','syncInterval','toggles','smsTracker'], d => {
-    if (d.groqKey) document.getElementById('inpGroqKey').value = d.groqKey;
-    if (d.geminiKey) document.getElementById('inpKey').value = d.geminiKey;
+  chrome.storage.local.get(['syncInterval','toggles','smsTracker'], d => {
     if (d.syncInterval) document.getElementById('inpInterval').value = d.syncInterval;
     if (d.smsTracker) {
       document.getElementById('inpSmsUrl').value = d.smsTracker.url || 'https://www.bharateleven.com';
@@ -133,17 +129,6 @@ function loadSettings() {
   });
 }
 
-function saveGroqKey() {
-  const v = document.getElementById('inpGroqKey').value.trim();
-  chrome.storage.local.set({ groqKey: v });
-  flash('btnSaveGroqKey', '✓ Saved');
-}
-
-function saveKey() {
-  const v = document.getElementById('inpKey').value.trim();
-  chrome.storage.local.set({ geminiKey: v });
-  flash('btnSaveKey', '✓ Saved');
-}
 
 function saveSms() {
   const smsTracker = {

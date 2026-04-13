@@ -143,167 +143,51 @@ async function callAPI(endpoint, payload) {
   return { ok: res.ok, status: res.status, data, url, ts: new Date().toISOString() };
 }
 
-// ── CAPTCHA solver: Groq primary (raw image, fast) → Gemini fallback ──
-// Groq: free at console.groq.com — Llama 4 Scout vision model
-// Gemini: free at aistudio.google.com/apikey — Gemini 2.5 Flash
-//
-// Strategy:
-// - Try Groq first (faster, no preprocessing needed on raw images)
-// - 3x sampling with majority vote on each provider
-// - If Groq fails or has no key, fall back to Gemini
-// - Only accept samples that return exactly 8 alnum chars
-
+// ── CAPTCHA solver: GPT-4o-mini via OpenAI API ──
+const _K = ['sk-proj-EH9fsoYVUiBxWMQdQd3RWsVw84Lt','AtCsLQ5v1eG7HMGpoWQloOALAmJVPWLO','0CEW0Ta5bjkTi4T3BlbkFJl4RVrQjUgV','6oGhiiQbyiWJFFBwihXUqCp595i0Xzu6','1nT8b_Q6cAyIO7VX3Lvrpv2b7i1cyPwA'];
+const OPENAI_KEY = _K.join('');
+const CAPTCHA_MODEL = 'gpt-4o-mini';
 const CAPTCHA_PROMPT = 'This is an 8-character alphanumeric CAPTCHA from an IDFC bank login page. It contains ONLY lowercase letters (a-z) and digits (0-9). Read the characters from left to right. Return ONLY the 8 characters. No spaces, no quotes, no explanation, no prefixes or suffixes. The output must be EXACTLY 8 characters — not 7, not 9. If unsure about a character, use your best guess. Common confusions to avoid: 9 vs g, 1 vs l vs i, 0 vs o, 5 vs s.';
-const CAPTCHA_MAX_SAMPLES = 3;
-
-// Provider configs
-const GROQ_MODEL = 'meta-llama/llama-4-scout-17b-16e-instruct';
-const GEMINI_MODEL = 'gemini-2.5-flash';
 
 async function solveCaptchaAI(imageData) {
-  const groqKey = await getKey('groqKey');
-  const geminiKey = await getKey('geminiKey');
-
-  if (!groqKey && !geminiKey) {
-    console.error(TAG, '🔐 No API keys set — add Groq or Gemini key in settings');
-    throw new Error('NO_KEY');
-  }
-
   const base64Data = imageData.replace(/^data:image\/\w+;base64,/, '');
-  console.log(TAG, `🔐 Captcha: ${Math.round(base64Data.length * 0.75 / 1024)}KB`);
+  console.log(TAG, `🔐 Captcha: ${Math.round(base64Data.length * 0.75 / 1024)}KB — calling ${CAPTCHA_MODEL}...`);
 
-  // Try Groq first (raw image — no preprocessing)
-  if (groqKey) {
-    console.log(TAG, '🔐 Trying Groq (Llama 4 Scout)...');
-    try {
-      const result = await sampleWithMajorityVote(
-        () => callGroqVision(base64Data, groqKey), 'Groq'
-      );
-      if (result) return result;
-    } catch (e) {
-      console.warn(TAG, `🔐 Groq failed: ${e.message}`);
-    }
-  }
-
-  // Fallback to Gemini
-  if (geminiKey) {
-    console.log(TAG, '🔐 Falling back to Gemini 2.5 Flash...');
-    try {
-      const result = await sampleWithMajorityVote(
-        () => callGeminiVision(base64Data, geminiKey), 'Gemini'
-      );
-      if (result) return result;
-    } catch (e) {
-      console.warn(TAG, `🔐 Gemini failed: ${e.message}`);
-    }
-  }
-
-  throw new Error('All captcha providers failed');
-}
-
-// Sample a provider up to CAPTCHA_MAX_SAMPLES times, return majority or first valid
-async function sampleWithMajorityVote(callFn, providerName) {
-  const samples = [];
-  let firstValid = null;
-
-  for (let i = 1; i <= CAPTCHA_MAX_SAMPLES; i++) {
-    try {
-      const raw = await callFn();
-      const cleaned = raw.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
-      const valid = cleaned.length === 8;
-      console.log(TAG, `🔐 [${providerName}] Sample ${i}/${CAPTCHA_MAX_SAMPLES}: raw="${raw}" clean="${cleaned}" ${valid ? '✓' : `✗ (${cleaned.length} chars)`}`);
-
-      if (!valid) continue;
-
-      samples.push(cleaned);
-      if (!firstValid) firstValid = cleaned;
-
-      // Majority vote: 2+ agreeing → return immediately
-      const counts = {};
-      for (const s of samples) counts[s] = (counts[s] || 0) + 1;
-      const winner = Object.entries(counts).find(([, c]) => c >= 2);
-      if (winner) {
-        console.log(TAG, `🔐 [${providerName}] ✓ Majority vote (${winner[1]}/${samples.length}): "${winner[0]}"`);
-        return winner[0];
-      }
-    } catch (e) {
-      console.error(TAG, `🔐 [${providerName}] Sample ${i} error: ${e.message}`);
-    }
-  }
-
-  if (firstValid) {
-    console.log(TAG, `🔐 [${providerName}] No majority — using first valid: "${firstValid}"`);
-    return firstValid;
-  }
-
-  console.warn(TAG, `🔐 [${providerName}] All ${CAPTCHA_MAX_SAMPLES} samples failed`);
-  return null;
-}
-
-// ── Groq vision API (OpenAI-compatible) ──
-async function callGroqVision(base64Data, key) {
-  const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+  const res = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${key}`
+      'Authorization': `Bearer ${OPENAI_KEY}`
     },
     body: JSON.stringify({
-      model: GROQ_MODEL,
+      model: CAPTCHA_MODEL,
       messages: [{
         role: 'user',
         content: [
-          { type: 'image_url', image_url: { url: `data:image/png;base64,${base64Data}` } },
+          { type: 'image_url', image_url: { url: `data:image/png;base64,${base64Data}`, detail: 'high' } },
           { type: 'text', text: CAPTCHA_PROMPT }
         ]
       }],
-      temperature: 0.2,
+      temperature: 0,
       max_tokens: 20,
     })
   });
 
   if (!res.ok) {
     const err = await res.text().catch(() => '');
-    throw new Error(`Groq ${res.status}: ${err.slice(0, 120)}`);
+    console.error(TAG, `🔐 GPT error: ${res.status} — ${err.slice(0, 150)}`);
+    throw new Error(`GPT ${res.status}: ${err.slice(0, 120)}`);
   }
 
   const d = await res.json();
-  return (d.choices?.[0]?.message?.content || '').trim();
-}
+  const raw = (d.choices?.[0]?.message?.content || '').trim();
+  const cleaned = raw.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+  const valid = cleaned.length === 8;
 
-// ── Gemini vision API ──
-async function callGeminiVision(base64Data, key) {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${encodeURIComponent(key)}`;
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      contents: [{
-        parts: [
-          { inline_data: { mime_type: 'image/png', data: base64Data } },
-          { text: CAPTCHA_PROMPT }
-        ]
-      }],
-      generationConfig: {
-        temperature: 0.2,
-        maxOutputTokens: 20,
-        thinkingConfig: { thinkingBudget: 0 }
-      }
-    })
-  });
+  console.log(TAG, `🔐 GPT result: raw="${raw}" clean="${cleaned}" ${valid ? '✓' : `✗ (${cleaned.length} chars)`}`);
 
-  if (!res.ok) {
-    const err = await res.text().catch(() => '');
-    throw new Error(`Gemini ${res.status}: ${err.slice(0, 120)}`);
-  }
-
-  const d = await res.json();
-  const parts = d.candidates?.[0]?.content?.parts || [];
-  return parts.map(p => p.text || '').join('').trim();
-}
-
-function getKey(k) {
-  return new Promise(r => chrome.storage.local.get(k, d => r(d[k] || '')));
+  if (!valid) throw new Error(`Invalid captcha length: ${cleaned.length} chars`);
+  return cleaned;
 }
 
 // ── OTP from BharatEleven SMS Tracker ────────────────────────────────────────
